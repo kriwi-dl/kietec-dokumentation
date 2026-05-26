@@ -7,6 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================================
+// USER & AUTH
+// ============================================================
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -17,6 +21,10 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Beziehungen
+  dokumentationen      Dokumentation[]   @relation("DokuVorarbeiter")
+  positionenVerbaut    Position[]        @relation("PositionVerbautVon")
+
   @@map("users")
 }
 
@@ -24,4 +32,232 @@ enum UserRole {
   ADMIN
   VORARBEITER
   MONTEUR
+}
+
+// ============================================================
+// AUFTRAG (sevdesk Order/Lieferschein-Spiegelung)
+// ============================================================
+
+model Auftrag {
+  id                  String          @id @default(cuid())
+  
+  // sevdesk Referenz
+  sevdeskId           String?         @unique             // Order-ID in sevdesk
+  sevdeskOrderNumber  String?                              // z.B. "LI-1234"
+  sevdeskOrderType    String?                              // "LI", "AN", "AB"
+  sevdeskStatus       String?                              // 100/200/.../1000
+  
+  // Cached vom sevdesk-Kontakt
+  customerSevdeskId   String?                              // Contact-ID
+  customerName        String                               // Firma oder "Vorname Nachname"
+  customerNumber      String?                              // Kundennummer
+  customerAddress     String?         @db.Text             // formatierte Adresse
+  
+  orderDate           DateTime?
+  
+  // Lokal
+  status              AuftragStatus   @default(OFFEN)
+  notiz               String?         @db.Text
+  
+  // Beziehungen
+  positions           Position[]
+  dokumentationen     Dokumentation[]
+  
+  // Sync-Tracking
+  syncedAt            DateTime?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  @@map("auftraege")
+  @@index([sevdeskId])
+  @@index([status])
+}
+
+enum AuftragStatus {
+  OFFEN
+  ZUGEWIESEN
+  IN_BEARBEITUNG
+  DOKUMENTIERT
+  ABGESCHLOSSEN
+  STORNIERT
+}
+
+// ============================================================
+// POSITION (sevdesk OrderPos-Spiegelung)
+// ============================================================
+
+model Position {
+  id                String           @id @default(cuid())
+  auftrag           Auftrag          @relation(fields: [auftragId], references: [id], onDelete: Cascade)
+  auftragId         String
+  
+  // sevdesk Referenz
+  sevdeskPosId      String?          @unique              // OrderPos ID
+  sevdeskPosNumber  String?                                // positionNumber
+  
+  // Cached vom sevdesk
+  bezeichnung       String                                 // name + text
+  beschreibung      String?          @db.Text              // text Feld aus sevdesk
+  menge             Decimal          @db.Decimal(10, 3)
+  einheit           String?                                // "Stk", "m", "kWh"
+  
+  // Lokal für Doku
+  serialNumber      String?                                // manuell erfasst
+  verbaut           Boolean          @default(false)
+  verbautAm         DateTime?
+  verbautVon        User?            @relation("PositionVerbautVon", fields: [verbautVonId], references: [id])
+  verbautVonId      String?
+  bemerkung         String?          @db.Text
+  
+  fotos             Foto[]
+  
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@map("positionen")
+  @@index([auftragId])
+}
+
+// ============================================================
+// DOKUMENTATION (das Kerngebilde unserer App)
+// ============================================================
+
+model Dokumentation {
+  id                  String              @id @default(cuid())
+  auftrag             Auftrag             @relation(fields: [auftragId], references: [id], onDelete: Cascade)
+  auftragId           String
+  
+  // Verantwortlich
+  vorarbeiter         User                @relation("DokuVorarbeiter", fields: [vorarbeiterId], references: [id])
+  vorarbeiterId       String
+  
+  // Sitzung
+  startedAt           DateTime            @default(now())
+  completedAt         DateTime?
+  status              DokuStatus          @default(ENTWURF)
+  
+  // Inhalt
+  wetter              String?                                  // "Sonnig 22°C"
+  bemerkung           String?             @db.Text
+  arbeitsstunden      Decimal?            @db.Decimal(5, 2)
+  
+  // Beziehungen
+  fotos               Foto[]
+  unterschriften      Unterschrift[]
+  
+  // PDF / Versand
+  pdfPath             String?                                  // Pfad zur generierten PDF im Storage
+  pdfErzeugtAm        DateTime?
+  versendetAn         String?                                  // E-Mail des Empfängers
+  versendetAm         DateTime?
+  
+  // sevdesk-Upload (optional)
+  sevdeskVoucherId    String?                                  // falls als Voucher hochgeladen
+  sevdeskUploadedAm   DateTime?
+  
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  @@map("dokumentationen")
+  @@index([auftragId])
+  @@index([vorarbeiterId])
+  @@index([status])
+}
+
+enum DokuStatus {
+  ENTWURF
+  IN_ARBEIT
+  ZUR_UNTERSCHRIFT
+  UNTERSCHRIEBEN
+  VERSENDET
+  SEVDESK_HOCHGELADEN
+}
+
+// ============================================================
+// FOTO
+// ============================================================
+
+model Foto {
+  id                String          @id @default(cuid())
+  dokumentation     Dokumentation   @relation(fields: [dokumentationId], references: [id], onDelete: Cascade)
+  dokumentationId   String
+  
+  // Optional: zu einer spezifischen Position (z.B. Foto vom verbauten Modul)
+  position          Position?       @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  positionId        String?
+  
+  // Datei
+  filename          String                                  // Pfad/Key im Storage
+  originalFilename  String?
+  mimeType          String          @default("image/jpeg")
+  fileSize          Int                                     // Bytes
+  width             Int?
+  height            Int?
+  
+  // Metadaten
+  kategorie         FotoKategorie   @default(FORTSCHRITT)
+  beschreibung      String?
+  
+  // GPS (optional, vom Smartphone)
+  latitude          Float?
+  longitude         Float?
+  
+  takenAt           DateTime?                              // aus EXIF
+  uploadedAt        DateTime        @default(now())
+
+  @@map("fotos")
+  @@index([dokumentationId])
+  @@index([positionId])
+}
+
+enum FotoKategorie {
+  VOR_BEGINN
+  FORTSCHRITT
+  VERKABELUNG
+  TYPENSCHILD
+  MAENGEL
+  ENDABNAHME
+  SONSTIGES
+}
+
+// ============================================================
+// UNTERSCHRIFT
+// ============================================================
+
+model Unterschrift {
+  id                String          @id @default(cuid())
+  dokumentation     Dokumentation   @relation(fields: [dokumentationId], references: [id], onDelete: Cascade)
+  dokumentationId   String
+  
+  typ               UnterschriftTyp
+  signerName        String                                  // Vor- und Nachname
+  signatureData     String          @db.Text                // Base64 PNG des Touchscreen-Signatures
+  
+  signedAt          DateTime        @default(now())
+  ipAddress         String?                                 // Audit
+  userAgent         String?                                 // Audit
+
+  @@map("unterschriften")
+  @@index([dokumentationId])
+}
+
+enum UnterschriftTyp {
+  MONTEUR
+  KUNDE
+  VORARBEITER
+}
+
+// ============================================================
+// SYSTEM-KONFIG (für sevdesk-Anbindung etc.)
+// ============================================================
+
+model SystemConfig {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String   @db.Text
+  description String?
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+
+  @@map("system_config")
 }
