@@ -7,6 +7,7 @@ import prismaPlugin from './plugins/prisma';
 import authPlugin from './plugins/auth';
 import authRoutes from './routes/auth';
 import usersRoutes from './routes/users';
+import auftraegeRoutes from './routes/auftraege';
 
 export interface BuildAppOptions {
   skipPrisma?: boolean;
@@ -32,12 +33,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     limits: { fileSize: config.upload.maxFileSize, files: 1 }
   });
 
-  // Echte Route-Module
+  // Route-Module
   await fastify.register(authRoutes);
   await fastify.register(usersRoutes);
+  await fastify.register(auftraegeRoutes);
 
-  // Restliche Routes (Health, /, Aufträge, Doku, Position, Foto, Unterschrift, Sync)
-  // werden in den nächsten Refactor-Schritten ausgegliedert
+  // Verbleibende inline-Routes (werden weiter zerlegt)
   await registerInlineRoutes(fastify);
 
   return fastify;
