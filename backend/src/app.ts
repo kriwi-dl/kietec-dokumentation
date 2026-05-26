@@ -8,6 +8,8 @@ import authPlugin from './plugins/auth';
 import authRoutes from './routes/auth';
 import usersRoutes from './routes/users';
 import auftraegeRoutes from './routes/auftraege';
+import dokumentationenRoutes from './routes/dokumentationen';
+import positionenRoutes from './routes/positionen';
 
 export interface BuildAppOptions {
   skipPrisma?: boolean;
@@ -19,7 +21,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     bodyLimit: config.upload.bodyLimit
   });
 
-  // Plugins
   if (!options.skipPrisma) {
     await fastify.register(prismaPlugin);
   }
@@ -37,8 +38,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await fastify.register(authRoutes);
   await fastify.register(usersRoutes);
   await fastify.register(auftraegeRoutes);
+  await fastify.register(dokumentationenRoutes);
+  await fastify.register(positionenRoutes);
 
-  // Verbleibende inline-Routes (werden weiter zerlegt)
+  // Verbleibende inline-Routes: Health/Root, Fotos, Unterschriften, Sync
   await registerInlineRoutes(fastify);
 
   return fastify;
