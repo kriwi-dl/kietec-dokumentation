@@ -5,7 +5,8 @@ import {
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { promises as fs } from 'node:fs';
-import { config, FINAL_DOKU_STATUSES, isValidDokuStatusTransition } from './config';
+import { config } from './config';
+import { FINAL_DOKU_STATUSES, isValidDokuStatusTransition } from './lib/dokuStatus';
 import { createSevdeskClient, SevdeskApiError } from './sevdesk/client';
 import { syncDeliveryNotes } from './sevdesk/sync';
 import {
