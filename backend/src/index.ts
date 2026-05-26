@@ -2,12 +2,20 @@ import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import jwt from '@fastify/jwt';
-import { PrismaClient, UserRole } from '@prisma/client';
+import { PrismaClient, UserRole, AuftragStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import 'dotenv/config';
+import {
+  createSevdeskClient,
+  SevdeskApiError
+} from './sevdesk/client';
+import { syncDeliveryNotes } from './sevdesk/sync';
 
-// ENV-Check
+// ============================================================
+// SETUP
+// ============================================================
+
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
   throw new Error('JWT_SECRET environment variable is required');
@@ -19,7 +27,6 @@ const fastify = Fastify({
 
 const prisma = new PrismaClient({ log: ['warn', 'error'] });
 
-// TypeScript Type-Augmentation
 declare module 'fastify' {
   interface FastifyInstance {
     prisma: PrismaClient;
@@ -35,7 +42,10 @@ declare module '@fastify/jwt' {
 
 fastify.decorate('prisma', prisma);
 
-// Plugins
+// ============================================================
+// PLUGINS
+// ============================================================
+
 await fastify.register(helmet, { contentSecurityPolicy: false });
 await fastify.register(cors, {
   origin: process.env.CORS_ORIGIN?.split(',') ?? true,
@@ -43,16 +53,26 @@ await fastify.register(cors, {
 });
 await fastify.register(jwt, { secret: JWT_SECRET });
 
-// Auth-Decorator
 fastify.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     await request.jwtVerify();
-  } catch (err) {
+  } catch {
     reply.code(401).send({ error: 'Unauthorized', message: 'Invalid or missing token' });
   }
 });
 
-// === Public Routes ===
+// Helper für Admin-only-Routen
+function requireAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
+  if (request.user.role !== UserRole.ADMIN) {
+    reply.code(403).send({ error: 'Forbidden', message: 'Admin role required' });
+    return false;
+  }
+  return true;
+}
+
+// ============================================================
+// PUBLIC ROUTES
+// ============================================================
 
 fastify.get('/', async () => ({
   name: 'KieTec Dokumentations-API',
@@ -60,8 +80,12 @@ fastify.get('/', async () => ({
   endpoints: {
     health: 'GET /health',
     login: 'POST /auth/login',
-    me: 'GET /auth/me (requires Bearer token)',
-    users: 'GET /users (requires Bearer token)'
+    me: 'GET /auth/me (Bearer)',
+    users: 'GET /users (Bearer)',
+    auftraegeList: 'GET /auftraege (Bearer)',
+    auftragDetail: 'GET /auftraege/:id (Bearer)',
+    sevdeskTest: 'GET /sync/sevdesk/test (Admin)',
+    sevdeskSync: 'POST /sync/sevdesk (Admin)'
   }
 }));
 
@@ -83,7 +107,9 @@ fastify.get('/health', async () => {
   };
 });
 
-// === Auth Routes ===
+// ============================================================
+// AUTH
+// ============================================================
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -93,29 +119,21 @@ const loginSchema = z.object({
 fastify.post('/auth/login', async (request, reply) => {
   const parsed = loginSchema.safeParse(request.body);
   if (!parsed.success) {
-    return reply.code(400).send({
-      error: 'Invalid input',
-      details: parsed.error.issues
-    });
+    return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
   }
-
   const { email, password } = parsed.data;
-
   const user = await fastify.prisma.user.findUnique({ where: { email } });
   if (!user || !user.active) {
     return reply.code(401).send({ error: 'Invalid credentials' });
   }
-
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) {
     return reply.code(401).send({ error: 'Invalid credentials' });
   }
-
   const token = fastify.jwt.sign(
     { id: user.id, email: user.email, role: user.role },
     { expiresIn: '8h' }
   );
-
   return {
     token,
     user: { id: user.id, email: user.email, name: user.name, role: user.role }
@@ -127,22 +145,129 @@ fastify.get('/auth/me', { onRequest: [fastify.authenticate] }, async (request, r
     where: { id: request.user.id },
     select: { id: true, email: true, name: true, role: true, active: true, createdAt: true }
   });
-  if (!user) {
-    return reply.code(404).send({ error: 'User not found' });
-  }
+  if (!user) return reply.code(404).send({ error: 'User not found' });
   return user;
 });
 
-// === Protected Routes ===
+// ============================================================
+// USERS
+// ============================================================
 
 fastify.get('/users', { onRequest: [fastify.authenticate] }, async () => {
   const users = await fastify.prisma.user.findMany({
-    select: { id: true, email: true, name: true, role: true, active: true, createdAt: true }
+    select: { id: true, email: true, name: true, role: true, active: true, createdAt: true },
+    orderBy: { createdAt: 'asc' }
   });
   return { count: users.length, users };
 });
 
-// === Lifecycle ===
+// ============================================================
+// AUFTRAEGE
+// ============================================================
+
+const auftragQuerySchema = z.object({
+  status: z.nativeEnum(AuftragStatus).optional()
+});
+
+fastify.get('/auftraege', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  const parsed = auftragQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
+  }
+  const where = parsed.data.status ? { status: parsed.data.status } : {};
+  const auftraege = await fastify.prisma.auftrag.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    include: { _count: { select: { positions: true, dokumentationen: true } } }
+  });
+  return { count: auftraege.length, auftraege };
+});
+
+fastify.get('/auftraege/:id', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const auftrag = await fastify.prisma.auftrag.findUnique({
+    where: { id },
+    include: {
+      positions: { orderBy: { sevdeskPosNumber: 'asc' } },
+      dokumentationen: {
+        orderBy: { startedAt: 'desc' },
+        include: {
+          vorarbeiter: { select: { id: true, name: true, email: true } },
+          _count: { select: { fotos: true, unterschriften: true } }
+        }
+      }
+    }
+  });
+  if (!auftrag) return reply.code(404).send({ error: 'Auftrag not found' });
+  return auftrag;
+});
+
+// ============================================================
+// SEVDESK SYNC
+// ============================================================
+
+fastify.get('/sync/sevdesk/test', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  if (!requireAdmin(request, reply)) return;
+  try {
+    const client = createSevdeskClient();
+    const orders = await client.getDeliveryNotes(1, 0);
+    return {
+      success: true,
+      message: 'sevdesk API erreichbar',
+      sampleOrderFound: orders.length > 0,
+      sampleOrderNumber: orders[0]?.orderNumber ?? null,
+      sampleOrderId: orders[0]?.id ?? null
+    };
+  } catch (e) {
+    if (e instanceof SevdeskApiError) {
+      return reply.code(502).send({
+        success: false,
+        statusCode: e.statusCode,
+        url: e.url,
+        bodyPreview: e.bodyText.slice(0, 300)
+      });
+    }
+    return reply.code(500).send({
+      success: false,
+      message: e instanceof Error ? e.message : String(e)
+    });
+  }
+});
+
+const syncQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(1000).optional()
+});
+
+fastify.post('/sync/sevdesk', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  if (!requireAdmin(request, reply)) return;
+  const parsed = syncQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
+  }
+  try {
+    const client = createSevdeskClient();
+    const result = await syncDeliveryNotes(fastify.prisma, client, parsed.data);
+    return result;
+  } catch (e) {
+    if (e instanceof SevdeskApiError) {
+      return reply.code(502).send({
+        error: 'sevdesk API error',
+        statusCode: e.statusCode,
+        url: e.url,
+        bodyPreview: e.bodyText.slice(0, 300)
+      });
+    }
+    request.log.error(e);
+    return reply.code(500).send({
+      error: 'Internal error',
+      message: e instanceof Error ? e.message : String(e)
+    });
+  }
+});
+
+// ============================================================
+// LIFECYCLE
+// ============================================================
 
 const closeGracefully = async (signal: string) => {
   fastify.log.info(`Received ${signal}, shutting down...`);
