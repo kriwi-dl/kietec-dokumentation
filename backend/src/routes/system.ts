@@ -25,8 +25,11 @@ const systemRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
       sigCreate: 'POST /dokumentationen/:dokuId/unterschriften (Bearer)',
       sigImage: 'GET /unterschriften/:id/image (Bearer)',
       sigDelete: 'DELETE /unterschriften/:id (Bearer)',
+      emailSend: 'POST /dokumentationen/:id/email (Bearer)',
+      emailTest: 'GET /email/test (Admin)',
       sevdeskTest: 'GET /sync/sevdesk/test (Admin)',
-      sevdeskSync: 'POST /sync/sevdesk (Admin)'
+      sevdeskSync: 'POST /sync/sevdesk (Admin)',
+      sevdeskUpload: 'POST /dokumentationen/:id/sevdesk-upload (Bearer)'
     }
   }));
 
