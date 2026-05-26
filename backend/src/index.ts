@@ -1,10 +1,8 @@
 import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
-import jwt from '@fastify/jwt';
 import multipart from '@fastify/multipart';
 import {
-  PrismaClient,
   UserRole,
   AuftragStatus,
   DokuStatus,
@@ -14,7 +12,9 @@ import {
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { promises as fs } from 'node:fs';
-import 'dotenv/config';
+import { config, FINAL_DOKU_STATUSES, isValidDokuStatusTransition } from './config';
+import prismaPlugin from './plugins/prisma';
+import authPlugin from './plugins/auth';
 import { createSevdeskClient, SevdeskApiError } from './sevdesk/client';
 import { syncDeliveryNotes } from './sevdesk/sync';
 import {
@@ -26,69 +26,25 @@ import { processImage } from './lib/imageProcessor';
 // SETUP
 // ============================================================
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is required');
-
 const fastify = Fastify({
-  logger: { level: process.env.LOG_LEVEL ?? 'info' },
-  bodyLimit: 30 * 1024 * 1024
+  logger: { level: config.logLevel },
+  bodyLimit: config.upload.bodyLimit
 });
 
-const prisma = new PrismaClient({ log: ['warn', 'error'] });
-
-declare module 'fastify' {
-  interface FastifyInstance {
-    prisma: PrismaClient;
-    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
-  }
-}
-declare module '@fastify/jwt' {
-  interface FastifyJWT {
-    payload: { id: string; email: string; role: UserRole };
-    user: { id: string; email: string; role: UserRole };
-  }
-}
-
-fastify.decorate('prisma', prisma);
-
+await fastify.register(prismaPlugin);
+await fastify.register(authPlugin);
 await fastify.register(helmet, { contentSecurityPolicy: false });
 await fastify.register(cors, {
-  origin: process.env.CORS_ORIGIN?.split(',') ?? true,
+  origin: config.corsOrigin,
   credentials: true
 });
-await fastify.register(jwt, { secret: JWT_SECRET });
 await fastify.register(multipart, {
-  limits: { fileSize: 25 * 1024 * 1024, files: 1 }
+  limits: { fileSize: config.upload.maxFileSize, files: 1 }
 });
 
-fastify.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
-  try { await request.jwtVerify(); }
-  catch { reply.code(401).send({ error: 'Unauthorized', message: 'Invalid or missing token' }); }
-});
-
-function requireAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
-  if (request.user.role !== UserRole.ADMIN) {
-    reply.code(403).send({ error: 'Forbidden', message: 'Admin role required' });
-    return false;
-  }
-  return true;
-}
-
-const FINAL_STATUSES: DokuStatus[] = [
-  DokuStatus.UNTERSCHRIEBEN, DokuStatus.VERSENDET, DokuStatus.SEVDESK_HOCHGELADEN
-];
-
-function isValidStatusTransition(from: DokuStatus, to: DokuStatus): boolean {
-  const transitions: Record<DokuStatus, DokuStatus[]> = {
-    ENTWURF:             [DokuStatus.IN_ARBEIT],
-    IN_ARBEIT:           [DokuStatus.ZUR_UNTERSCHRIFT],
-    ZUR_UNTERSCHRIFT:    [DokuStatus.IN_ARBEIT, DokuStatus.UNTERSCHRIEBEN],
-    UNTERSCHRIEBEN:      [DokuStatus.VERSENDET],
-    VERSENDET:           [DokuStatus.SEVDESK_HOCHGELADEN],
-    SEVDESK_HOCHGELADEN: []
-  };
-  return transitions[from]?.includes(to) ?? false;
-}
+// Aliase für bestehende Routen weiter unten
+const FINAL_STATUSES = FINAL_DOKU_STATUSES;
+const isValidStatusTransition = isValidDokuStatusTransition;
 
 // ============================================================
 // PUBLIC ROUTES
@@ -114,11 +70,9 @@ fastify.get('/', async () => ({
     fotoOriginal: 'GET /fotos/:id/file (Bearer)',
     fotoThumb: 'GET /fotos/:id/thumbnail (Bearer)',
     fotoDelete: 'DELETE /fotos/:id (Bearer)',
-    // === NEU IN SCHRITT 14 ===
     sigCreate: 'POST /dokumentationen/:dokuId/unterschriften (Bearer)',
     sigImage: 'GET /unterschriften/:id/image (Bearer)',
     sigDelete: 'DELETE /unterschriften/:id (Bearer)',
-    // === ===
     sevdeskTest: 'GET /sync/sevdesk/test (Admin)',
     sevdeskSync: 'POST /sync/sevdesk (Admin)'
   }
@@ -157,7 +111,7 @@ fastify.post('/auth/login', async (request, reply) => {
   if (!ok) return reply.code(401).send({ error: 'Invalid credentials' });
   const token = fastify.jwt.sign(
     { id: user.id, email: user.email, role: user.role },
-    { expiresIn: '8h' }
+    { expiresIn: config.jwt.expiresIn }
   );
   return {
     token,
@@ -297,7 +251,6 @@ fastify.get('/dokumentationen/:id', { onRequest: [fastify.authenticate] }, async
       fotos: { orderBy: { uploadedAt: 'desc' } },
       unterschriften: {
         orderBy: { signedAt: 'asc' },
-        // signatureData NICHT mit zurückgeben (zu groß für Listen)
         select: {
           id: true, typ: true, signerName: true, signedAt: true,
           ipAddress: true, userAgent: true
@@ -543,16 +496,14 @@ fastify.delete('/fotos/:id', { onRequest: [fastify.authenticate] }, async (reque
 });
 
 // ============================================================
-// === NEU IN SCHRITT 14: UNTERSCHRIFTEN ===
+// UNTERSCHRIFTEN
 // ============================================================
 
 const createSignatureSchema = z.object({
   typ: z.nativeEnum(UnterschriftTyp),
   signerName: z.string().min(1).max(200),
-  signatureData: z.string().min(20).max(700_000) // ~500 KB base64 entspricht ~370 KB binär
+  signatureData: z.string().min(20).max(700_000)
 });
-
-const MAX_SIGNATURE_BYTES = 500 * 1024;
 
 fastify.post('/dokumentationen/:dokuId/unterschriften', { onRequest: [fastify.authenticate] }, async (request, reply) => {
   const { dokuId } = request.params as { dokuId: string };
@@ -574,12 +525,10 @@ fastify.post('/dokumentationen/:dokuId/unterschriften', { onRequest: [fastify.au
     });
   }
 
-  // Data-URL-Prefix entfernen falls vorhanden
   let sigBase64 = parsed.data.signatureData;
   const dataUrlMatch = sigBase64.match(/^data:image\/png;base64,(.+)$/);
   if (dataUrlMatch) sigBase64 = dataUrlMatch[1];
 
-  // Base64 dekodieren und PNG-Magic-Bytes prüfen
   let binary: Buffer;
   try { binary = Buffer.from(sigBase64, 'base64'); }
   catch { return reply.code(400).send({ error: 'signatureData ist kein gültiges Base64' }); }
@@ -592,9 +541,9 @@ fastify.post('/dokumentationen/:dokuId/unterschriften', { onRequest: [fastify.au
     });
   }
 
-  if (binary.length > MAX_SIGNATURE_BYTES) {
+  if (binary.length > config.upload.maxSignatureBytes) {
     return reply.code(400).send({
-      error: `signatureData zu groß: ${Math.round(binary.length / 1024)} KB (max ${MAX_SIGNATURE_BYTES / 1024} KB)`
+      error: `signatureData zu groß: ${Math.round(binary.length / 1024)} KB (max ${config.upload.maxSignatureBytes / 1024} KB)`
     });
   }
 
@@ -609,7 +558,6 @@ fastify.post('/dokumentationen/:dokuId/unterschriften', { onRequest: [fastify.au
     }
   });
 
-  // Auto-Statuswechsel: MONTEUR + KUNDE vorhanden → UNTERSCHRIEBEN
   const allTypen = new Set<string>([
     ...doku.unterschriften.map(u => u.typ),
     parsed.data.typ
@@ -620,7 +568,6 @@ fastify.post('/dokumentationen/:dokuId/unterschriften', { onRequest: [fastify.au
   let statusAdvanced = false;
   if (hasMonteurAndKunde &&
       (doku.status === DokuStatus.IN_ARBEIT || doku.status === DokuStatus.ZUR_UNTERSCHRIFT)) {
-    // Falls erst IN_ARBEIT: erst auf ZUR_UNTERSCHRIFT, dann UNTERSCHRIEBEN (zwei Transitions)
     if (doku.status === DokuStatus.IN_ARBEIT) {
       await fastify.prisma.dokumentation.update({
         where: { id: dokuId }, data: { status: DokuStatus.ZUR_UNTERSCHRIFT }
@@ -677,7 +624,7 @@ fastify.delete('/unterschriften/:id', { onRequest: [fastify.authenticate] }, asy
 // ============================================================
 
 fastify.get('/sync/sevdesk/test', { onRequest: [fastify.authenticate] }, async (request, reply) => {
-  if (!requireAdmin(request, reply)) return;
+  if (!fastify.requireAdmin(request, reply)) return;
   try {
     const client = createSevdeskClient();
     const orders = await client.getDeliveryNotes(1, 0);
@@ -706,7 +653,7 @@ const syncQuerySchema = z.object({
 });
 
 fastify.post('/sync/sevdesk', { onRequest: [fastify.authenticate] }, async (request, reply) => {
-  if (!requireAdmin(request, reply)) return;
+  if (!fastify.requireAdmin(request, reply)) return;
   const parsed = syncQuerySchema.safeParse(request.query);
   if (!parsed.success) return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
   try {
@@ -734,21 +681,15 @@ fastify.post('/sync/sevdesk', { onRequest: [fastify.authenticate] }, async (requ
 const closeGracefully = async (signal: string) => {
   fastify.log.info(`Received ${signal}, shutting down...`);
   await fastify.close();
-  await prisma.$disconnect();
   process.exit(0);
 };
 process.on('SIGINT', () => closeGracefully('SIGINT'));
 process.on('SIGTERM', () => closeGracefully('SIGTERM'));
 
-const PORT = Number(process.env.PORT) || 3000;
-const HOST = process.env.HOST || '0.0.0.0';
-
 try {
-  await prisma.$connect();
-  await fastify.listen({ port: PORT, host: HOST });
-  fastify.log.info(`KieTec Backend bereit auf http://${HOST}:${PORT}`);
+  await fastify.listen({ port: config.port, host: config.host });
+  fastify.log.info(`KieTec Backend bereit auf http://${config.host}:${config.port}`);
 } catch (err) {
   fastify.log.error(err);
-  await prisma.$disconnect();
   process.exit(1);
 }
