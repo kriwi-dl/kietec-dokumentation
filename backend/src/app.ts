@@ -5,6 +5,7 @@ import multipart from '@fastify/multipart';
 import { config } from './config';
 import prismaPlugin from './plugins/prisma';
 import authPlugin from './plugins/auth';
+import systemRoutes from './routes/system';
 import authRoutes from './routes/auth';
 import usersRoutes from './routes/users';
 import auftraegeRoutes from './routes/auftraege';
@@ -12,6 +13,7 @@ import dokumentationenRoutes from './routes/dokumentationen';
 import positionenRoutes from './routes/positionen';
 import fotosRoutes from './routes/fotos';
 import unterschriftenRoutes from './routes/unterschriften';
+import syncRoutes from './routes/sync';
 
 export interface BuildAppOptions {
   skipPrisma?: boolean;
@@ -23,6 +25,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     bodyLimit: config.upload.bodyLimit
   });
 
+  // Infrastructure-Plugins
   if (!options.skipPrisma) {
     await fastify.register(prismaPlugin);
   }
@@ -37,6 +40,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   // Route-Module
+  await fastify.register(systemRoutes);
   await fastify.register(authRoutes);
   await fastify.register(usersRoutes);
   await fastify.register(auftraegeRoutes);
@@ -44,14 +48,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await fastify.register(positionenRoutes);
   await fastify.register(fotosRoutes);
   await fastify.register(unterschriftenRoutes);
-
-  // Verbleibende inline-Routes: Health/Root + Sync (kommt im nächsten Schritt)
-  await registerInlineRoutes(fastify);
+  await fastify.register(syncRoutes);
 
   return fastify;
-}
-
-async function registerInlineRoutes(fastify: FastifyInstance) {
-  const { registerAllInlineRoutes } = await import('./inline-routes');
-  await registerAllInlineRoutes(fastify);
 }
