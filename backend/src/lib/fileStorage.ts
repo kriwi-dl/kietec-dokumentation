@@ -42,3 +42,23 @@ export async function deleteFotoFiles(dokuId: string, filename: string): Promise
     fs.unlink(thumbnailPath(dokuId, filename))
   ]);
 }
+
+export function getPdfDir(): string {
+  return path.join(UPLOAD_DIR, 'pdfs');
+}
+
+export function pdfPath(dokuId: string): string {
+  return path.join(getPdfDir(), `${dokuId}.pdf`);
+}
+
+export async function ensurePdfDir(): Promise<void> {
+  await fs.mkdir(getPdfDir(), { recursive: true });
+}
+
+export async function deletePdfFile(dokuId: string): Promise<void> {
+  try {
+    await fs.unlink(pdfPath(dokuId));
+  } catch {
+    // ignore - Datei existiert nicht
+  }
+}
