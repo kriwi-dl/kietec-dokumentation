@@ -10,6 +10,8 @@ import usersRoutes from './routes/users';
 import auftraegeRoutes from './routes/auftraege';
 import dokumentationenRoutes from './routes/dokumentationen';
 import positionenRoutes from './routes/positionen';
+import fotosRoutes from './routes/fotos';
+import unterschriftenRoutes from './routes/unterschriften';
 
 export interface BuildAppOptions {
   skipPrisma?: boolean;
@@ -40,8 +42,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await fastify.register(auftraegeRoutes);
   await fastify.register(dokumentationenRoutes);
   await fastify.register(positionenRoutes);
+  await fastify.register(fotosRoutes);
+  await fastify.register(unterschriftenRoutes);
 
-  // Verbleibende inline-Routes: Health/Root, Fotos, Unterschriften, Sync
+  // Verbleibende inline-Routes: Health/Root + Sync (kommt im nächsten Schritt)
   await registerInlineRoutes(fastify);
 
   return fastify;
