@@ -28,11 +28,15 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string |
   return res.json() as Promise<T>;
 }
 
+// === Types ===
+
+export type UserRole = 'ADMIN' | 'VORARBEITER' | 'MONTEUR';
+
 export interface User {
   id: string;
   email: string;
   name: string;
-  role: 'ADMIN' | 'VORARBEITER' | 'MONTEUR';
+  role: UserRole;
   createdAt?: string;
 }
 
@@ -41,11 +45,45 @@ export interface LoginResponse {
   user: User;
 }
 
+export type AuftragStatus =
+  | 'OFFEN'
+  | 'ZUGEWIESEN'
+  | 'IN_BEARBEITUNG'
+  | 'DOKUMENTIERT'
+  | 'ABGESCHLOSSEN'
+  | 'STORNIERT';
+
+export interface Auftrag {
+  id: string;
+  sevdeskOrderId?: string | null;
+  sevdeskOrderNumber: string;
+  customerName: string;
+  customerAddress?: string | null;
+  orderDate?: string | null;
+  status: AuftragStatus;
+  positionsCount?: number;
+  dokumentationenCount?: number;
+  updatedAt?: string;
+}
+
+export interface AuftraegeListResponse {
+  count: number;
+  auftraege: Auftrag[];
+}
+
+// === API ===
+
 export const api = {
   login: (email: string, password: string) =>
     request<LoginResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }),
+
   me: (token: string) => request<User>('/auth/me', {}, token),
+
+  listAuftraege: (token: string, status?: AuftragStatus) => {
+    const query = status ? `?status=${status}` : '';
+    return request<AuftraegeListResponse>(`/auftraege${query}`, {}, token);
+  },
 };

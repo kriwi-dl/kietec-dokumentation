@@ -2,7 +2,8 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import type { ReactNode } from 'react';
 import { AuthProvider, useAuth } from './lib/auth-context';
 import { Login } from './pages/Login';
-import { Dashboard } from './pages/Dashboard';
+import { AuftraegeList } from './pages/AuftraegeList';
+import { AuftragDetail } from './pages/AuftragDetail';
 
 function LoadingScreen() {
   return (
@@ -33,7 +34,8 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
-          <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/" element={<ProtectedRoute><AuftraegeList /></ProtectedRoute>} />
+          <Route path="/auftraege/:id" element={<ProtectedRoute><AuftragDetail /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
