@@ -110,6 +110,7 @@ model Position {
   bemerkung         String?          @db.Text
   
   fotos             Foto[]
+  abnahmen          Unterschrift[]
   
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
@@ -225,20 +226,22 @@ enum FotoKategorie {
 // ============================================================
 
 model Unterschrift {
-  id                String          @id @default(cuid())
-  dokumentation     Dokumentation   @relation(fields: [dokumentationId], references: [id], onDelete: Cascade)
-  dokumentationId   String
-  
-  typ               UnterschriftTyp
-  signerName        String                                  // Vor- und Nachname
-  signatureData     String          @db.Text                // Base64 PNG des Touchscreen-Signatures
-  
-  signedAt          DateTime        @default(now())
-  ipAddress         String?                                 // Audit
-  userAgent         String?                                 // Audit
+  id              String           @id @default(cuid())
+  dokumentationId String
+  positionId      String?
+  typ             UnterschriftTyp
+  signerName      String
+  signatureData   String           @db.Text
+  ipAddress       String?
+  userAgent       String?
+  signedAt        DateTime         @default(now())
 
-  @@map("unterschriften")
+  dokumentation   Dokumentation    @relation(fields: [dokumentationId], references: [id], onDelete: Cascade)
+  position        Position?        @relation(fields: [positionId], references: [id], onDelete: SetNull)
+
   @@index([dokumentationId])
+  @@index([positionId])
+  @@map("unterschriften")
 }
 
 enum UnterschriftTyp {

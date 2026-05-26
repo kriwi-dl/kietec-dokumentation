@@ -92,16 +92,26 @@ const dokumentationenRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
           include: {
             positions: {
               orderBy: { sevdeskPosNumber: 'asc' },
-              include: { verbautVon: { select: { id: true, name: true } } }
+              include: {
+                verbautVon: { select: { id: true, name: true } },
+                abnahmen: {
+                  // Teilabnahmen für diese Position
+                  orderBy: { signedAt: 'asc' },
+                  select: {
+                    id: true, typ: true, signerName: true, signedAt: true, ipAddress: true
+                  }
+                }
+              }
             }
           }
         },
         fotos: { orderBy: { uploadedAt: 'desc' } },
         unterschriften: {
+          // Alle Unterschriften - Schluss + Teilabnahmen
           orderBy: { signedAt: 'asc' },
           select: {
             id: true, typ: true, signerName: true, signedAt: true,
-            ipAddress: true, userAgent: true
+            ipAddress: true, userAgent: true, positionId: true
           }
         }
       }
