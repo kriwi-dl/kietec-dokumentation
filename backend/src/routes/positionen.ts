@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 const updatePositionSchema = z.object({
   verbaut: z.boolean().optional(),
-  serialNumber: z.string().max(200).optional().nullable(),
+  serialNumbers: z.array(z.string().max(200)).max(500).optional(),
   bemerkung: z.string().max(2000).optional().nullable()
 });
 

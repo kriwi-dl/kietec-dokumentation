@@ -103,7 +103,7 @@ model Position {
   einheit           String?                                // "Stk", "m", "kWh"
   
   // Lokal für Doku
-  serialNumber      String?                                // manuell erfasst
+  serialNumbers     String[]         @default([])         // manuell erfasst
   verbaut           Boolean          @default(false)
   verbautAm         DateTime?
   verbautVon        User?            @relation("PositionVerbautVon", fields: [verbautVonId], references: [id])

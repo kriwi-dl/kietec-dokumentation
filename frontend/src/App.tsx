@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './lib/auth-context';
 import { Login } from './pages/Login';
 import { AuftraegeList } from './pages/AuftraegeList';
 import { AuftragDetail } from './pages/AuftragDetail';
+import { DokuDetail } from './pages/DokuDetail';
 
 function LoadingScreen() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
           <Route path="/" element={<ProtectedRoute><AuftraegeList /></ProtectedRoute>} />
           <Route path="/auftraege/:id" element={<ProtectedRoute><AuftragDetail /></ProtectedRoute>} />
+          <Route path="/dokumentationen/:id" element={<ProtectedRoute><DokuDetail /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>

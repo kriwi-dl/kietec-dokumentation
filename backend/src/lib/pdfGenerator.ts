@@ -24,7 +24,7 @@ export interface PdfData {
       bezeichnung: string;
       menge: number;
       einheit: string | null;
-      serialNumber: string | null;
+      serialNumbers: string[];
       verbaut: boolean;
       verbautAm: Date | null;
       bemerkung: string | null;
@@ -181,7 +181,12 @@ function buildPositionen(doc: PdfDoc, data: PdfData) {
 
     const indent = MARGIN + 10;
     doc.text(`Menge: ${pos.menge}${pos.einheit ? ' ' + pos.einheit : ''}`, indent, doc.y);
-    if (pos.serialNumber) doc.text(`Serial-Nr.: ${pos.serialNumber}`, indent);
+    if (pos.serialNumbers && pos.serialNumbers.length > 0) {
+  const label = pos.serialNumbers.length === 1 ? 'Serial-Nr.' : 'Serial-Nrn.';
+  doc.text(`${label}: ${pos.serialNumbers.join(', ')}`, indent, doc.y, {
+    width: CONTENT_WIDTH - 20
+  });
+}
     if (pos.verbaut) {
       const installer = pos.verbautVon?.name ?? 'unbekannt';
       doc.fillColor('#1a7a1a').text(`Verbaut: ✓  durch ${installer}  am ${fmtDate(pos.verbautAm)}`, indent);

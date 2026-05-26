@@ -11,7 +11,7 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init: RequestInit = {}, token?: string | null): Promise<T> {
   const headers = new Headers(init.headers);
-  if (!headers.has('Content-Type') && init.body) {
+  if (!headers.has('Content-Type') && init.body && typeof init.body === 'string') {
     headers.set('Content-Type', 'application/json');
   }
   if (token) {
@@ -46,12 +46,27 @@ export interface LoginResponse {
 }
 
 export type AuftragStatus =
-  | 'OFFEN'
-  | 'ZUGEWIESEN'
-  | 'IN_BEARBEITUNG'
-  | 'DOKUMENTIERT'
-  | 'ABGESCHLOSSEN'
-  | 'STORNIERT';
+  | 'OFFEN' | 'ZUGEWIESEN' | 'IN_BEARBEITUNG'
+  | 'DOKUMENTIERT' | 'ABGESCHLOSSEN' | 'STORNIERT';
+
+export type DokuStatus =
+  | 'ENTWURF' | 'IN_ARBEIT' | 'ZUR_UNTERSCHRIFT'
+  | 'UNTERSCHRIEBEN' | 'VERSENDET' | 'SEVDESK_HOCHGELADEN';
+
+export interface Position {
+  id: string;
+  auftragId: string;
+  sevdeskPosNumber?: string | null;
+  bezeichnung: string;
+  menge: number;
+  einheit?: string | null;
+  serialNumber?: string | null;
+  verbaut: boolean;
+  verbautAm?: string | null;
+  verbautVonId?: string | null;
+  verbautVon?: { id: string; name: string } | null;
+  bemerkung?: string | null;
+}
 
 export interface Auftrag {
   id: string;
@@ -61,6 +76,7 @@ export interface Auftrag {
   customerAddress?: string | null;
   orderDate?: string | null;
   status: AuftragStatus;
+  positions?: Position[];
   positionsCount?: number;
   dokumentationenCount?: number;
   updatedAt?: string;
@@ -71,13 +87,33 @@ export interface AuftraegeListResponse {
   auftraege: Auftrag[];
 }
 
+export interface Dokumentation {
+  id: string;
+  auftragId: string;
+  vorarbeiterId: string;
+  status: DokuStatus;
+  wetter?: string | null;
+  bemerkung?: string | null;
+  arbeitsstunden?: number | null;
+  startedAt: string;
+  completedAt?: string | null;
+  pdfPath?: string | null;
+  versendetAn?: string | null;
+  versendetAm?: string | null;
+  sevdeskVoucherId?: string | null;
+}
+
+export interface DokumentationenListResponse {
+  count: number;
+  dokumentationen: Dokumentation[];
+}
+
 // === API ===
 
 export const api = {
   login: (email: string, password: string) =>
     request<LoginResponse>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
+      method: 'POST', body: JSON.stringify({ email, password }),
     }),
 
   me: (token: string) => request<User>('/auth/me', {}, token),
@@ -86,4 +122,37 @@ export const api = {
     const query = status ? `?status=${status}` : '';
     return request<AuftraegeListResponse>(`/auftraege${query}`, {}, token);
   },
+
+  getAuftrag: (token: string, id: string) =>
+    request<Auftrag>(`/auftraege/${id}`, {}, token),
+
+  listDokus: (token: string, params: { auftragId?: string; status?: DokuStatus; mine?: boolean } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.auftragId) qs.set('auftragId', params.auftragId);
+    if (params.status) qs.set('status', params.status);
+    if (params.mine) qs.set('mine', 'true');
+    const query = qs.toString() ? `?${qs.toString()}` : '';
+    return request<DokumentationenListResponse>(`/dokumentationen${query}`, {}, token);
+  },
+
+  getDoku: (token: string, id: string) =>
+    request<Dokumentation>(`/dokumentationen/${id}`, {}, token),
+
+  createDoku: (token: string, auftragId: string, data: { wetter?: string; bemerkung?: string; arbeitsstunden?: number } = {}) =>
+    request<Dokumentation>(`/auftraege/${auftragId}/dokumentationen`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, token),
+
+  updateDoku: (token: string, id: string, data: Partial<Pick<Dokumentation, 'wetter' | 'bemerkung' | 'arbeitsstunden'>>) =>
+    request<Dokumentation>(`/dokumentationen/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }, token),
+
+  updatePosition: (token: string, id: string, data: Partial<Pick<Position, 'verbaut' | 'serialNumber' | 'bemerkung'>>) =>
+    request<Position>(`/positionen/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }, token),
 };
