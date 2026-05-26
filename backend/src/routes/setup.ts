@@ -46,6 +46,7 @@ const setupRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
       data: {
         email: parsed.data.email,
         name: parsed.data.name,
+        password: passwordHash,
         passwordHash,
         role: UserRole.ADMIN,
         isActive: true
