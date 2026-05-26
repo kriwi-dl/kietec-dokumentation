@@ -8,7 +8,8 @@ import {
   UserRole,
   AuftragStatus,
   DokuStatus,
-  FotoKategorie
+  FotoKategorie,
+  UnterschriftTyp
 } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
@@ -17,11 +18,7 @@ import 'dotenv/config';
 import { createSevdeskClient, SevdeskApiError } from './sevdesk/client';
 import { syncDeliveryNotes } from './sevdesk/sync';
 import {
-  ensureDokuDirs,
-  generateFilename,
-  originalPath,
-  thumbnailPath,
-  deleteFotoFiles
+  ensureDokuDirs, generateFilename, originalPath, thumbnailPath, deleteFotoFiles
 } from './lib/fileStorage';
 import { processImage } from './lib/imageProcessor';
 
@@ -30,13 +27,11 @@ import { processImage } from './lib/imageProcessor';
 // ============================================================
 
 const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  throw new Error('JWT_SECRET environment variable is required');
-}
+if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is required');
 
 const fastify = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? 'info' },
-  bodyLimit: 30 * 1024 * 1024 // 30 MB für Multipart
+  bodyLimit: 30 * 1024 * 1024
 });
 
 const prisma = new PrismaClient({ log: ['warn', 'error'] });
@@ -56,10 +51,6 @@ declare module '@fastify/jwt' {
 
 fastify.decorate('prisma', prisma);
 
-// ============================================================
-// PLUGINS
-// ============================================================
-
 await fastify.register(helmet, { contentSecurityPolicy: false });
 await fastify.register(cors, {
   origin: process.env.CORS_ORIGIN?.split(',') ?? true,
@@ -67,18 +58,12 @@ await fastify.register(cors, {
 });
 await fastify.register(jwt, { secret: JWT_SECRET });
 await fastify.register(multipart, {
-  limits: {
-    fileSize: 25 * 1024 * 1024, // 25 MB pro Datei
-    files: 1
-  }
+  limits: { fileSize: 25 * 1024 * 1024, files: 1 }
 });
 
 fastify.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
-  try {
-    await request.jwtVerify();
-  } catch {
-    reply.code(401).send({ error: 'Unauthorized', message: 'Invalid or missing token' });
-  }
+  try { await request.jwtVerify(); }
+  catch { reply.code(401).send({ error: 'Unauthorized', message: 'Invalid or missing token' }); }
 });
 
 function requireAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
@@ -87,6 +72,22 @@ function requireAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
     return false;
   }
   return true;
+}
+
+const FINAL_STATUSES: DokuStatus[] = [
+  DokuStatus.UNTERSCHRIEBEN, DokuStatus.VERSENDET, DokuStatus.SEVDESK_HOCHGELADEN
+];
+
+function isValidStatusTransition(from: DokuStatus, to: DokuStatus): boolean {
+  const transitions: Record<DokuStatus, DokuStatus[]> = {
+    ENTWURF:             [DokuStatus.IN_ARBEIT],
+    IN_ARBEIT:           [DokuStatus.ZUR_UNTERSCHRIFT],
+    ZUR_UNTERSCHRIFT:    [DokuStatus.IN_ARBEIT, DokuStatus.UNTERSCHRIEBEN],
+    UNTERSCHRIEBEN:      [DokuStatus.VERSENDET],
+    VERSENDET:           [DokuStatus.SEVDESK_HOCHGELADEN],
+    SEVDESK_HOCHGELADEN: []
+  };
+  return transitions[from]?.includes(to) ?? false;
 }
 
 // ============================================================
@@ -113,6 +114,11 @@ fastify.get('/', async () => ({
     fotoOriginal: 'GET /fotos/:id/file (Bearer)',
     fotoThumb: 'GET /fotos/:id/thumbnail (Bearer)',
     fotoDelete: 'DELETE /fotos/:id (Bearer)',
+    // === NEU IN SCHRITT 14 ===
+    sigCreate: 'POST /dokumentationen/:dokuId/unterschriften (Bearer)',
+    sigImage: 'GET /unterschriften/:id/image (Bearer)',
+    sigDelete: 'DELETE /unterschriften/:id (Bearer)',
+    // === ===
     sevdeskTest: 'GET /sync/sevdesk/test (Admin)',
     sevdeskSync: 'POST /sync/sevdesk (Admin)'
   }
@@ -120,12 +126,8 @@ fastify.get('/', async () => ({
 
 fastify.get('/health', async () => {
   let dbStatus = 'unknown';
-  try {
-    await fastify.prisma.$queryRaw`SELECT 1`;
-    dbStatus = 'connected';
-  } catch {
-    dbStatus = 'error';
-  }
+  try { await fastify.prisma.$queryRaw`SELECT 1`; dbStatus = 'connected'; }
+  catch { dbStatus = 'error'; }
   return {
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -147,18 +149,12 @@ const loginSchema = z.object({
 
 fastify.post('/auth/login', async (request, reply) => {
   const parsed = loginSchema.safeParse(request.body);
-  if (!parsed.success) {
-    return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
-  }
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
   const { email, password } = parsed.data;
   const user = await fastify.prisma.user.findUnique({ where: { email } });
-  if (!user || !user.active) {
-    return reply.code(401).send({ error: 'Invalid credentials' });
-  }
+  if (!user || !user.active) return reply.code(401).send({ error: 'Invalid credentials' });
   const ok = await bcrypt.compare(password, user.password);
-  if (!ok) {
-    return reply.code(401).send({ error: 'Invalid credentials' });
-  }
+  if (!ok) return reply.code(401).send({ error: 'Invalid credentials' });
   const token = fastify.jwt.sign(
     { id: user.id, email: user.email, role: user.role },
     { expiresIn: '8h' }
@@ -194,19 +190,14 @@ fastify.get('/users', { onRequest: [fastify.authenticate] }, async () => {
 // AUFTRAEGE
 // ============================================================
 
-const auftragQuerySchema = z.object({
-  status: z.nativeEnum(AuftragStatus).optional()
-});
+const auftragQuerySchema = z.object({ status: z.nativeEnum(AuftragStatus).optional() });
 
 fastify.get('/auftraege', { onRequest: [fastify.authenticate] }, async (request, reply) => {
   const parsed = auftragQuerySchema.safeParse(request.query);
-  if (!parsed.success) {
-    return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
-  }
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
   const where = parsed.data.status ? { status: parsed.data.status } : {};
   const auftraege = await fastify.prisma.auftrag.findMany({
-    where,
-    orderBy: { createdAt: 'desc' },
+    where, orderBy: { createdAt: 'desc' },
     include: { _count: { select: { positions: true, dokumentationen: true } } }
   });
   return { count: auftraege.length, auftraege };
@@ -235,24 +226,6 @@ fastify.get('/auftraege/:id', { onRequest: [fastify.authenticate] }, async (requ
 // DOKUMENTATIONEN
 // ============================================================
 
-function isValidStatusTransition(from: DokuStatus, to: DokuStatus): boolean {
-  const transitions: Record<DokuStatus, DokuStatus[]> = {
-    ENTWURF:             [DokuStatus.IN_ARBEIT],
-    IN_ARBEIT:           [DokuStatus.ZUR_UNTERSCHRIFT],
-    ZUR_UNTERSCHRIFT:    [DokuStatus.IN_ARBEIT, DokuStatus.UNTERSCHRIEBEN],
-    UNTERSCHRIEBEN:      [DokuStatus.VERSENDET],
-    VERSENDET:           [DokuStatus.SEVDESK_HOCHGELADEN],
-    SEVDESK_HOCHGELADEN: []
-  };
-  return transitions[from]?.includes(to) ?? false;
-}
-
-const FINAL_STATUSES: DokuStatus[] = [
-  DokuStatus.UNTERSCHRIEBEN,
-  DokuStatus.VERSENDET,
-  DokuStatus.SEVDESK_HOCHGELADEN
-];
-
 const createDokuSchema = z.object({
   wetter: z.string().max(200).optional(),
   bemerkung: z.string().max(5000).optional()
@@ -261,15 +234,11 @@ const createDokuSchema = z.object({
 fastify.post('/auftraege/:id/dokumentationen', { onRequest: [fastify.authenticate] }, async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = createDokuSchema.safeParse(request.body ?? {});
-  if (!parsed.success) {
-    return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
-  }
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
   const auftrag = await fastify.prisma.auftrag.findUnique({ where: { id } });
   if (!auftrag) return reply.code(404).send({ error: 'Auftrag not found' });
   if (auftrag.status === AuftragStatus.ABGESCHLOSSEN || auftrag.status === AuftragStatus.STORNIERT) {
-    return reply.code(400).send({
-      error: `Auftrag hat Status ${auftrag.status} - keine neue Dokumentation möglich`
-    });
+    return reply.code(400).send({ error: `Auftrag hat Status ${auftrag.status} - keine neue Dokumentation möglich` });
   }
   const dokumentation = await fastify.prisma.dokumentation.create({
     data: {
@@ -282,10 +251,7 @@ fastify.post('/auftraege/:id/dokumentationen', { onRequest: [fastify.authenticat
     include: { vorarbeiter: { select: { id: true, name: true, email: true } } }
   });
   if (auftrag.status === AuftragStatus.OFFEN || auftrag.status === AuftragStatus.ZUGEWIESEN) {
-    await fastify.prisma.auftrag.update({
-      where: { id },
-      data: { status: AuftragStatus.IN_BEARBEITUNG }
-    });
+    await fastify.prisma.auftrag.update({ where: { id }, data: { status: AuftragStatus.IN_BEARBEITUNG } });
   }
   return reply.code(201).send(dokumentation);
 });
@@ -298,16 +264,13 @@ const dokuListQuerySchema = z.object({
 
 fastify.get('/dokumentationen', { onRequest: [fastify.authenticate] }, async (request, reply) => {
   const parsed = dokuListQuerySchema.safeParse(request.query);
-  if (!parsed.success) {
-    return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
-  }
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
   const where: Record<string, unknown> = {};
   if (parsed.data.status) where.status = parsed.data.status;
   if (parsed.data.auftragId) where.auftragId = parsed.data.auftragId;
   if (parsed.data.mine === 'true') where.vorarbeiterId = request.user.id;
   const dokumentationen = await fastify.prisma.dokumentation.findMany({
-    where,
-    orderBy: { startedAt: 'desc' },
+    where, orderBy: { startedAt: 'desc' },
     include: {
       vorarbeiter: { select: { id: true, name: true } },
       auftrag: { select: { id: true, sevdeskOrderNumber: true, customerName: true } },
@@ -332,7 +295,14 @@ fastify.get('/dokumentationen/:id', { onRequest: [fastify.authenticate] }, async
         }
       },
       fotos: { orderBy: { uploadedAt: 'desc' } },
-      unterschriften: { orderBy: { signedAt: 'asc' } }
+      unterschriften: {
+        orderBy: { signedAt: 'asc' },
+        // signatureData NICHT mit zurückgeben (zu groß für Listen)
+        select: {
+          id: true, typ: true, signerName: true, signedAt: true,
+          ipAddress: true, userAgent: true
+        }
+      }
     }
   });
   if (!dokumentation) return reply.code(404).send({ error: 'Dokumentation not found' });
@@ -349,9 +319,7 @@ const updateDokuSchema = z.object({
 fastify.patch('/dokumentationen/:id', { onRequest: [fastify.authenticate] }, async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = updateDokuSchema.safeParse(request.body);
-  if (!parsed.success) {
-    return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
-  }
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
   const existing = await fastify.prisma.dokumentation.findUnique({ where: { id } });
   if (!existing) return reply.code(404).send({ error: 'Dokumentation not found' });
   if (existing.vorarbeiterId !== request.user.id && request.user.role !== UserRole.ADMIN) {
@@ -404,9 +372,7 @@ const updatePositionSchema = z.object({
 fastify.patch('/positionen/:id', { onRequest: [fastify.authenticate] }, async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = updatePositionSchema.safeParse(request.body);
-  if (!parsed.success) {
-    return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
-  }
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
   const position = await fastify.prisma.position.findUnique({
     where: { id }, include: { auftrag: true }
   });
@@ -440,19 +406,15 @@ fastify.patch('/positionen/:id', { onRequest: [fastify.authenticate] }, async (r
 
 fastify.post('/dokumentationen/:dokuId/fotos', { onRequest: [fastify.authenticate] }, async (request, reply) => {
   const { dokuId } = request.params as { dokuId: string };
-
   const doku = await fastify.prisma.dokumentation.findUnique({ where: { id: dokuId } });
   if (!doku) return reply.code(404).send({ error: 'Dokumentation not found' });
   if (doku.vorarbeiterId !== request.user.id && request.user.role !== UserRole.ADMIN) {
     return reply.code(403).send({ error: 'Forbidden' });
   }
   if (FINAL_STATUSES.includes(doku.status)) {
-    return reply.code(400).send({
-      error: `Doku ist ${doku.status} - keine Foto-Uploads mehr möglich`
-    });
+    return reply.code(400).send({ error: `Doku ist ${doku.status} - keine Foto-Uploads mehr möglich` });
   }
 
-  // Multipart parsen
   let fileBuffer: Buffer | null = null;
   let originalFilename = 'upload.jpg';
   let kategorie: FotoKategorie = FotoKategorie.FORTSCHRITT;
@@ -460,8 +422,7 @@ fastify.post('/dokumentationen/:dokuId/fotos', { onRequest: [fastify.authenticat
   let positionId: string | undefined;
 
   try {
-    const parts = request.parts();
-    for await (const part of parts) {
+    for await (const part of request.parts()) {
       if (part.type === 'file') {
         if (!part.mimetype.startsWith('image/')) {
           return reply.code(400).send({ error: `Datei ist kein Bild (mimetype: ${part.mimetype})` });
@@ -470,15 +431,10 @@ fastify.post('/dokumentationen/:dokuId/fotos', { onRequest: [fastify.authenticat
         originalFilename = part.filename ?? 'upload.jpg';
       } else {
         const value = String(part.value);
-        if (part.fieldname === 'kategorie') {
-          if (Object.values(FotoKategorie).includes(value as FotoKategorie)) {
-            kategorie = value as FotoKategorie;
-          }
-        } else if (part.fieldname === 'beschreibung') {
-          beschreibung = value;
-        } else if (part.fieldname === 'positionId') {
-          positionId = value;
-        }
+        if (part.fieldname === 'kategorie' && Object.values(FotoKategorie).includes(value as FotoKategorie)) {
+          kategorie = value as FotoKategorie;
+        } else if (part.fieldname === 'beschreibung') beschreibung = value;
+        else if (part.fieldname === 'positionId') positionId = value;
       }
     }
   } catch (e) {
@@ -496,9 +452,7 @@ fastify.post('/dokumentationen/:dokuId/fotos', { onRequest: [fastify.authenticat
     const pos = await fastify.prisma.position.findFirst({
       where: { id: positionId, auftragId: doku.auftragId }
     });
-    if (!pos) {
-      return reply.code(400).send({ error: 'Position gehört nicht zu diesem Auftrag' });
-    }
+    if (!pos) return reply.code(400).send({ error: 'Position gehört nicht zu diesem Auftrag' });
   }
 
   await ensureDokuDirs(dokuId);
@@ -507,10 +461,8 @@ fastify.post('/dokumentationen/:dokuId/fotos', { onRequest: [fastify.authenticat
   const thumbPath = thumbnailPath(dokuId, filename);
 
   let meta;
-  try {
-    meta = await processImage(fileBuffer, origPath, thumbPath);
-  } catch (e) {
-    // Bei Fehler: angelegte Datei (falls vorhanden) wieder löschen
+  try { meta = await processImage(fileBuffer, origPath, thumbPath); }
+  catch (e) {
     await deleteFotoFiles(dokuId, filename);
     return reply.code(500).send({
       error: 'Bildverarbeitung fehlgeschlagen',
@@ -536,11 +488,9 @@ fastify.post('/dokumentationen/:dokuId/fotos', { onRequest: [fastify.authenticat
     }
   });
 
-  // Erstes Foto bei ENTWURF: Doku auf IN_ARBEIT setzen
   if (doku.status === DokuStatus.ENTWURF) {
     await fastify.prisma.dokumentation.update({
-      where: { id: dokuId },
-      data: { status: DokuStatus.IN_ARBEIT }
+      where: { id: dokuId }, data: { status: DokuStatus.IN_ARBEIT }
     });
   }
 
@@ -560,9 +510,7 @@ fastify.get('/fotos/:id/file', { onRequest: [fastify.authenticate] }, async (req
   try {
     const data = await fs.readFile(originalPath(foto.dokumentationId, foto.filename));
     return reply.type(foto.mimeType).send(data);
-  } catch {
-    return reply.code(404).send({ error: 'File not found on disk' });
-  }
+  } catch { return reply.code(404).send({ error: 'File not found on disk' }); }
 });
 
 fastify.get('/fotos/:id/thumbnail', { onRequest: [fastify.authenticate] }, async (request, reply) => {
@@ -572,9 +520,7 @@ fastify.get('/fotos/:id/thumbnail', { onRequest: [fastify.authenticate] }, async
   try {
     const data = await fs.readFile(thumbnailPath(foto.dokumentationId, foto.filename));
     return reply.type('image/jpeg').send(data);
-  } catch {
-    return reply.code(404).send({ error: 'Thumbnail not found on disk' });
-  }
+  } catch { return reply.code(404).send({ error: 'Thumbnail not found on disk' }); }
 });
 
 fastify.delete('/fotos/:id', { onRequest: [fastify.authenticate] }, async (request, reply) => {
@@ -594,6 +540,136 @@ fastify.delete('/fotos/:id', { onRequest: [fastify.authenticate] }, async (reque
   await deleteFotoFiles(foto.dokumentationId, foto.filename);
   await fastify.prisma.foto.delete({ where: { id } });
   return { success: true, message: 'Foto gelöscht' };
+});
+
+// ============================================================
+// === NEU IN SCHRITT 14: UNTERSCHRIFTEN ===
+// ============================================================
+
+const createSignatureSchema = z.object({
+  typ: z.nativeEnum(UnterschriftTyp),
+  signerName: z.string().min(1).max(200),
+  signatureData: z.string().min(20).max(700_000) // ~500 KB base64 entspricht ~370 KB binär
+});
+
+const MAX_SIGNATURE_BYTES = 500 * 1024;
+
+fastify.post('/dokumentationen/:dokuId/unterschriften', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  const { dokuId } = request.params as { dokuId: string };
+  const parsed = createSignatureSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid input', details: parsed.error.issues });
+
+  const doku = await fastify.prisma.dokumentation.findUnique({
+    where: { id: dokuId },
+    include: { unterschriften: { select: { typ: true } } }
+  });
+  if (!doku) return reply.code(404).send({ error: 'Dokumentation not found' });
+
+  if (doku.vorarbeiterId !== request.user.id && request.user.role !== UserRole.ADMIN) {
+    return reply.code(403).send({ error: 'Forbidden' });
+  }
+  if (FINAL_STATUSES.includes(doku.status)) {
+    return reply.code(400).send({
+      error: `Doku ist ${doku.status} - keine Unterschriften mehr möglich`
+    });
+  }
+
+  // Data-URL-Prefix entfernen falls vorhanden
+  let sigBase64 = parsed.data.signatureData;
+  const dataUrlMatch = sigBase64.match(/^data:image\/png;base64,(.+)$/);
+  if (dataUrlMatch) sigBase64 = dataUrlMatch[1];
+
+  // Base64 dekodieren und PNG-Magic-Bytes prüfen
+  let binary: Buffer;
+  try { binary = Buffer.from(sigBase64, 'base64'); }
+  catch { return reply.code(400).send({ error: 'signatureData ist kein gültiges Base64' }); }
+
+  if (binary.length < 8 ||
+      binary[0] !== 0x89 || binary[1] !== 0x50 ||
+      binary[2] !== 0x4E || binary[3] !== 0x47) {
+    return reply.code(400).send({
+      error: 'signatureData ist kein PNG (PNG-Header fehlt)'
+    });
+  }
+
+  if (binary.length > MAX_SIGNATURE_BYTES) {
+    return reply.code(400).send({
+      error: `signatureData zu groß: ${Math.round(binary.length / 1024)} KB (max ${MAX_SIGNATURE_BYTES / 1024} KB)`
+    });
+  }
+
+  const signature = await fastify.prisma.unterschrift.create({
+    data: {
+      dokumentationId: dokuId,
+      typ: parsed.data.typ,
+      signerName: parsed.data.signerName.trim(),
+      signatureData: sigBase64,
+      ipAddress: request.ip,
+      userAgent: request.headers['user-agent']?.slice(0, 500) ?? null
+    }
+  });
+
+  // Auto-Statuswechsel: MONTEUR + KUNDE vorhanden → UNTERSCHRIEBEN
+  const allTypen = new Set<string>([
+    ...doku.unterschriften.map(u => u.typ),
+    parsed.data.typ
+  ]);
+  const hasMonteurAndKunde =
+    allTypen.has(UnterschriftTyp.MONTEUR) && allTypen.has(UnterschriftTyp.KUNDE);
+
+  let statusAdvanced = false;
+  if (hasMonteurAndKunde &&
+      (doku.status === DokuStatus.IN_ARBEIT || doku.status === DokuStatus.ZUR_UNTERSCHRIFT)) {
+    // Falls erst IN_ARBEIT: erst auf ZUR_UNTERSCHRIFT, dann UNTERSCHRIEBEN (zwei Transitions)
+    if (doku.status === DokuStatus.IN_ARBEIT) {
+      await fastify.prisma.dokumentation.update({
+        where: { id: dokuId }, data: { status: DokuStatus.ZUR_UNTERSCHRIFT }
+      });
+    }
+    await fastify.prisma.dokumentation.update({
+      where: { id: dokuId },
+      data: { status: DokuStatus.UNTERSCHRIEBEN, completedAt: new Date() }
+    });
+    statusAdvanced = true;
+  }
+
+  return reply.code(201).send({
+    signature: {
+      id: signature.id,
+      typ: signature.typ,
+      signerName: signature.signerName,
+      signedAt: signature.signedAt,
+      ipAddress: signature.ipAddress
+    },
+    url: `/unterschriften/${signature.id}/image`,
+    statusAdvanced
+  });
+});
+
+fastify.get('/unterschriften/:id/image', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const sig = await fastify.prisma.unterschrift.findUnique({ where: { id } });
+  if (!sig) return reply.code(404).send({ error: 'Unterschrift not found' });
+  const binary = Buffer.from(sig.signatureData, 'base64');
+  return reply.type('image/png').send(binary);
+});
+
+fastify.delete('/unterschriften/:id', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const sig = await fastify.prisma.unterschrift.findUnique({
+    where: { id }, include: { dokumentation: true }
+  });
+  if (!sig) return reply.code(404).send({ error: 'Unterschrift not found' });
+  if (sig.dokumentation.vorarbeiterId !== request.user.id && request.user.role !== UserRole.ADMIN) {
+    return reply.code(403).send({ error: 'Forbidden' });
+  }
+  if (FINAL_STATUSES.includes(sig.dokumentation.status)) {
+    return reply.code(400).send({
+      error: `Doku ist bereits ${sig.dokumentation.status} - Unterschrift kann nicht gelöscht werden`
+    });
+  }
+  await fastify.prisma.unterschrift.delete({ where: { id } });
+  return { success: true, message: 'Unterschrift gelöscht' };
 });
 
 // ============================================================
@@ -632,9 +708,7 @@ const syncQuerySchema = z.object({
 fastify.post('/sync/sevdesk', { onRequest: [fastify.authenticate] }, async (request, reply) => {
   if (!requireAdmin(request, reply)) return;
   const parsed = syncQuerySchema.safeParse(request.query);
-  if (!parsed.success) {
-    return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
-  }
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
   try {
     const client = createSevdeskClient();
     const result = await syncDeliveryNotes(fastify.prisma, client, parsed.data);
