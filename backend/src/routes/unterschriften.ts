@@ -7,12 +7,12 @@ import { FINAL_DOKU_STATUSES } from '../lib/dokuStatus';
 const createSignatureSchema = z.object({
   typ: z.nativeEnum(UnterschriftTyp),
   signerName: z.string().min(1).max(200),
-  signatureData: z.string().min(20).max(700_000)
+  signatureData: z.string().min(20).max(700_000),
+  positionId: z.string().optional()
 });
 
 const unterschriftenRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
 
-  // CREATE
   fastify.post('/dokumentationen/:dokuId/unterschriften', { onRequest: [fastify.authenticate] }, async (request, reply) => {
     const { dokuId } = request.params as { dokuId: string };
     const parsed = createSignatureSchema.safeParse(request.body);
@@ -22,7 +22,7 @@ const unterschriftenRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
 
     const doku = await fastify.prisma.dokumentation.findUnique({
       where: { id: dokuId },
-      include: { unterschriften: { select: { typ: true } } }
+      include: { unterschriften: { select: { typ: true, positionId: true } } }
     });
     if (!doku) return reply.code(404).send({ error: 'Dokumentation not found' });
     if (doku.vorarbeiterId !== request.user.id && request.user.role !== UserRole.ADMIN) {
@@ -34,7 +34,15 @@ const unterschriftenRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       });
     }
 
-    // Data-URL-Prefix entfernen falls vorhanden
+    if (parsed.data.positionId) {
+      const pos = await fastify.prisma.position.findFirst({
+        where: { id: parsed.data.positionId, auftragId: doku.auftragId }
+      });
+      if (!pos) {
+        return reply.code(400).send({ error: 'Position gehört nicht zu diesem Auftrag' });
+      }
+    }
+
     let sigBase64 = parsed.data.signatureData;
     const dataUrlMatch = sigBase64.match(/^data:image\/png;base64,(.+)$/);
     if (dataUrlMatch) sigBase64 = dataUrlMatch[1];
@@ -46,11 +54,8 @@ const unterschriftenRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
     if (binary.length < 8 ||
         binary[0] !== 0x89 || binary[1] !== 0x50 ||
         binary[2] !== 0x4E || binary[3] !== 0x47) {
-      return reply.code(400).send({
-        error: 'signatureData ist kein PNG (PNG-Header fehlt)'
-      });
+      return reply.code(400).send({ error: 'signatureData ist kein PNG (PNG-Header fehlt)' });
     }
-
     if (binary.length > config.upload.maxSignatureBytes) {
       return reply.code(400).send({
         error: `signatureData zu groß: ${Math.round(binary.length / 1024)} KB (max ${config.upload.maxSignatureBytes / 1024} KB)`
@@ -60,6 +65,7 @@ const unterschriftenRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
     const signature = await fastify.prisma.unterschrift.create({
       data: {
         dokumentationId: dokuId,
+        positionId: parsed.data.positionId ?? null,
         typ: parsed.data.typ,
         signerName: parsed.data.signerName.trim(),
         signatureData: sigBase64,
@@ -68,27 +74,26 @@ const unterschriftenRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       }
     });
 
-    // Auto-Statuswechsel: MONTEUR + KUNDE vorhanden → UNTERSCHRIEBEN
-    const allTypen = new Set<string>([
-      ...doku.unterschriften.map(u => u.typ),
-      parsed.data.typ
-    ]);
-    const hasMonteurAndKunde =
-      allTypen.has(UnterschriftTyp.MONTEUR) && allTypen.has(UnterschriftTyp.KUNDE);
-
+    const isTeilabnahme = !!parsed.data.positionId;
     let statusAdvanced = false;
-    if (hasMonteurAndKunde &&
-        (doku.status === DokuStatus.IN_ARBEIT || doku.status === DokuStatus.ZUR_UNTERSCHRIFT)) {
-      if (doku.status === DokuStatus.IN_ARBEIT) {
+
+    // Schluss-Status-Logik: MONTEUR + KUNDE auf Doku-Level → Doku UNTERSCHRIEBEN
+    // Funktioniert aus jedem nicht-finalen Status (ENTWURF, IN_ARBEIT, ZUR_UNTERSCHRIFT)
+    if (!isTeilabnahme && !FINAL_DOKU_STATUSES.includes(doku.status)) {
+      const docLevelTypen = new Set<string>([
+        ...doku.unterschriften.filter(u => u.positionId === null).map(u => u.typ),
+        parsed.data.typ
+      ]);
+      const hasMonteurAndKunde =
+        docLevelTypen.has(UnterschriftTyp.MONTEUR) && docLevelTypen.has(UnterschriftTyp.KUNDE);
+
+      if (hasMonteurAndKunde) {
         await fastify.prisma.dokumentation.update({
-          where: { id: dokuId }, data: { status: DokuStatus.ZUR_UNTERSCHRIFT }
+          where: { id: dokuId },
+          data: { status: DokuStatus.UNTERSCHRIEBEN, completedAt: new Date() }
         });
+        statusAdvanced = true;
       }
-      await fastify.prisma.dokumentation.update({
-        where: { id: dokuId },
-        data: { status: DokuStatus.UNTERSCHRIEBEN, completedAt: new Date() }
-      });
-      statusAdvanced = true;
     }
 
     return reply.code(201).send({
@@ -97,14 +102,15 @@ const unterschriftenRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         typ: signature.typ,
         signerName: signature.signerName,
         signedAt: signature.signedAt,
-        ipAddress: signature.ipAddress
+        ipAddress: signature.ipAddress,
+        positionId: signature.positionId,
+        isTeilabnahme
       },
       url: `/unterschriften/${signature.id}/image`,
       statusAdvanced
     });
   });
 
-  // GET IMAGE
   fastify.get('/unterschriften/:id/image', { onRequest: [fastify.authenticate] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const sig = await fastify.prisma.unterschrift.findUnique({ where: { id } });
@@ -113,7 +119,6 @@ const unterschriftenRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
     return reply.type('image/png').send(binary);
   });
 
-  // DELETE
   fastify.delete('/unterschriften/:id', { onRequest: [fastify.authenticate] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const sig = await fastify.prisma.unterschrift.findUnique({
