@@ -15,6 +15,7 @@ import fotosRoutes from './routes/fotos';
 import unterschriftenRoutes from './routes/unterschriften';
 import syncRoutes from './routes/sync';
 import pdfRoutes from './routes/pdf';
+import emailRoutes from './routes/email';   // NEU
 
 export interface BuildAppOptions {
   skipPrisma?: boolean;
@@ -50,6 +51,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await fastify.register(unterschriftenRoutes);
   await fastify.register(syncRoutes);
   await fastify.register(pdfRoutes);
+  await fastify.register(emailRoutes);      // NEU
 
   return fastify;
 }

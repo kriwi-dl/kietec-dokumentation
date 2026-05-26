@@ -26,5 +26,16 @@ export const config = {
   },
   jwt: {
     expiresIn: '8h'
+  },
+  email: {
+    smtp: {
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT) || 465,
+      secure: process.env.SMTP_SECURE !== 'false',
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS
+    },
+    from: process.env.EMAIL_FROM,
+    fromName: process.env.EMAIL_FROM_NAME ?? 'KieTec-Dokumentation'
   }
 } as const;
