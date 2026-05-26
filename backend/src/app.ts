@@ -5,16 +5,13 @@ import multipart from '@fastify/multipart';
 import { config } from './config';
 import prismaPlugin from './plugins/prisma';
 import authPlugin from './plugins/auth';
+import authRoutes from './routes/auth';
+import usersRoutes from './routes/users';
 
 export interface BuildAppOptions {
-  /** Wenn true, wird Prisma nicht geladen (für isolierte Tests). Default: false. */
   skipPrisma?: boolean;
 }
 
-/**
- * Baut eine Fastify-Instanz mit allen Plugins und Routes.
- * Startet sie aber nicht – das macht `index.ts`.
- */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const fastify = Fastify({
     logger: { level: config.logLevel },
@@ -35,19 +32,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     limits: { fileSize: config.upload.maxFileSize, files: 1 }
   });
 
-  // Routes (kommen in den nächsten Refactor-Schritten als eigene Plugins)
+  // Echte Route-Module
+  await fastify.register(authRoutes);
+  await fastify.register(usersRoutes);
+
+  // Restliche Routes (Health, /, Aufträge, Doku, Position, Foto, Unterschrift, Sync)
+  // werden in den nächsten Refactor-Schritten ausgegliedert
   await registerInlineRoutes(fastify);
 
   return fastify;
 }
 
-/**
- * TEMPORÄR: Alle Routes inline registrieren.
- * In den nächsten Refactor-Schritten splitten wir das in routes/auth.ts, routes/auftraege.ts etc.
- * Diese Funktion wird dann Stück für Stück leerer, bis sie verschwindet.
- */
 async function registerInlineRoutes(fastify: FastifyInstance) {
-  // Wird durch import aus inline-routes.ts gefüllt
   const { registerAllInlineRoutes } = await import('./inline-routes');
   await registerAllInlineRoutes(fastify);
 }
