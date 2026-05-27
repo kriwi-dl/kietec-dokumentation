@@ -1,8 +1,24 @@
 import PDFDocument from 'pdfkit';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
+import path from 'node:path';
 import { thumbnailPath } from './fileStorage';
 
 type PdfDoc = InstanceType<typeof PDFDocument>;
+
+// === BRANDING (hier ggf. anpassen) ===
+const LOGO_PATH = path.resolve(process.cwd(), 'src/assets/kietec-logo.png');
+const COMPANY_NAME = 'KDS Kienitz UG';
+const COMPANY_SUBLINE = 'Photovoltaik-Installation';
+const COLOR_PRIMARY = '#15414a';
+const COLOR_TEXT = '#0f1419';
+const COLOR_MUTED = '#6b7280';
+const COLOR_BORDER = '#e5e7eb';
+const COLOR_SUCCESS = '#0d6e3a';
+
+// === Layout ===
+const PAGE_HEIGHT = 842;
+const MARGIN = 50;
+const CONTENT_WIDTH = 595 - 2 * MARGIN;
 
 export interface PdfData {
   id: string;
@@ -24,16 +40,12 @@ export interface PdfData {
       bezeichnung: string;
       menge: number;
       einheit: string | null;
-      serialNumbers: string[];
+      serialNumber: string | null;
       verbaut: boolean;
       verbautAm: Date | null;
       bemerkung: string | null;
       verbautVon: { name: string } | null;
-      abnahmen: Array<{
-        signerName: string;
-        signedAt: Date;
-        typ: string;
-      }>;
+      abnahmen: Array<{ signerName: string; signedAt: Date; typ: string }>;
     }>;
   };
   fotos: Array<{
@@ -52,23 +64,17 @@ export interface PdfData {
   }>;
 }
 
-const COLOR_PRIMARY = '#003366';
-const COLOR_MUTED = '#666666';
-const COLOR_LIGHT_BG = '#f5f5f5';
-const PAGE_WIDTH = 595;
-const MARGIN = 50;
-const CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN;
-
 export async function generatePdf(data: PdfData, outputPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: 'A4',
       margin: MARGIN,
+      bufferPages: true,
       info: {
         Title: `Lieferschein ${data.auftrag.sevdeskOrderNumber}`,
-        Author: 'KieTec-Dokumentations-App',
-        Creator: 'KieTec-Dokumentations-App'
-      }
+        Author: `${COMPANY_NAME} · KieTec-Dokumentation`,
+        Creator: 'KieTec-Dokumentation',
+      },
     });
 
     const stream = createWriteStream(outputPath);
@@ -78,7 +84,9 @@ export async function generatePdf(data: PdfData, outputPath: string): Promise<vo
 
     try {
       buildHeader(doc, data);
-      buildAuftragsInfo(doc, data);
+      buildAuftragInfo(doc, data);
+      buildKundenInfo(doc, data);
+      buildBedingungen(doc, data);
       buildPositionen(doc, data);
       buildFotos(doc, data);
       buildSchlussunterschriften(doc, data);
@@ -90,240 +98,339 @@ export async function generatePdf(data: PdfData, outputPath: string): Promise<vo
   });
 }
 
-function fmtDate(d: Date | null | undefined): string {
+// === Utilities ===
+
+function fmtDate(d: Date | string | null | undefined): string {
   if (!d) return '–';
   const date = d instanceof Date ? d : new Date(d);
   return date.toLocaleString('de-DE', {
     day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit'
+    hour: '2-digit', minute: '2-digit',
   });
 }
 
 function ensureSpace(doc: PdfDoc, needed: number) {
-  if (doc.y + needed > doc.page.height - MARGIN) {
+  if (doc.y + needed > PAGE_HEIGHT - MARGIN - 35) {
     doc.addPage();
   }
 }
 
-function buildHeader(doc: PdfDoc, data: PdfData) {
-  doc.fontSize(22).fillColor(COLOR_PRIMARY).font('Helvetica-Bold')
-     .text('Lieferschein', MARGIN, MARGIN, { align: 'center', width: CONTENT_WIDTH });
-  doc.fontSize(13).font('Helvetica')
-     .text('Abnahmedokumentation', { align: 'center', width: CONTENT_WIDTH });
-  doc.moveDown(0.3);
-  doc.fontSize(10).fillColor(COLOR_MUTED)
-     .text('KDS Kienitz UG · Photovoltaik-Installation', { align: 'center', width: CONTENT_WIDTH });
-  doc.moveDown(0.5);
-  doc.strokeColor(COLOR_PRIMARY).lineWidth(2)
-     .moveTo(MARGIN, doc.y).lineTo(MARGIN + CONTENT_WIDTH, doc.y).stroke();
-  doc.moveDown(1);
-  doc.fillColor('black');
+function sectionHeader(doc: PdfDoc, title: string) {
+  doc.font('Helvetica-Bold').fontSize(9).fillColor(COLOR_PRIMARY)
+    .text(title.toUpperCase(), MARGIN, doc.y, {
+      characterSpacing: 1.5, lineBreak: false,
+    });
+  doc.y += 16;
+  doc.fillColor(COLOR_TEXT);
 }
 
-function buildAuftragsInfo(doc: PdfDoc, data: PdfData) {
-  doc.fontSize(11).font('Helvetica-Bold').fillColor(COLOR_PRIMARY).text('AUFTRAG');
-  doc.fillColor('black').font('Helvetica').fontSize(10);
-  doc.moveDown(0.2);
+function keyValueRow(doc: PdfDoc, label: string, value: string) {
+  const labelWidth = 120;
+  const y = doc.y;
+  doc.font('Helvetica').fontSize(9).fillColor(COLOR_MUTED)
+    .text(label, MARGIN, y, { lineBreak: false, width: labelWidth });
+  doc.font('Helvetica').fontSize(10).fillColor(COLOR_TEXT)
+    .text(value, MARGIN + labelWidth, y - 1, {
+      lineBreak: true, width: CONTENT_WIDTH - labelWidth,
+    });
+  doc.y = Math.max(doc.y, y + 15);
+}
 
-  const labelWidth = 130;
-  const valueX = MARGIN + labelWidth;
+function drawCheckmark(doc: PdfDoc, x: number, y: number, size: number, color: string) {
+  doc.save();
+  doc.strokeColor(color).lineWidth(Math.max(1, size * 0.18))
+    .lineCap('round').lineJoin('round')
+    .moveTo(x, y + size * 0.55)
+    .lineTo(x + size * 0.4, y + size * 0.85)
+    .lineTo(x + size * 0.95, y + size * 0.15)
+    .stroke();
+  doc.restore();
+}
 
-  let row = (label: string, value: string) => {
-    const y = doc.y;
-    doc.font('Helvetica-Bold').text(label, MARGIN, y);
-    doc.font('Helvetica').text(value, valueX, y);
-  };
-  row('Auftragsnummer:', data.auftrag.sevdeskOrderNumber);
-  row('Status:', data.status);
-  row('Vorarbeiter:', data.vorarbeiter.name);
-  if (data.completedAt) row('Abgeschlossen:', fmtDate(data.completedAt));
-  doc.moveDown(0.5);
+// === Sections ===
 
-  doc.font('Helvetica-Bold').fillColor(COLOR_PRIMARY).fontSize(11).text('KUNDE');
-  doc.fillColor('black').font('Helvetica').fontSize(10);
-  doc.moveDown(0.2);
-  const customerLines = (data.auftrag.customerAddress ?? data.auftrag.customerName).split('\n');
-  customerLines.forEach(line => doc.text(line));
-  doc.moveDown(0.5);
+function buildHeader(doc: PdfDoc, data: PdfData) {
+  const top = MARGIN;
+  const logoHeight = 45;
 
-  if (data.wetter || data.bemerkung || data.arbeitsstunden) {
-    doc.font('Helvetica-Bold').fillColor(COLOR_PRIMARY).fontSize(11).text('ARBEITSBEDINGUNGEN');
-    doc.fillColor('black').font('Helvetica').fontSize(10);
-    doc.moveDown(0.2);
-    if (data.wetter) doc.text(`Wetter: ${data.wetter}`);
-    if (data.arbeitsstunden) doc.text(`Arbeitsstunden: ${data.arbeitsstunden} h`);
-    if (data.bemerkung) {
-      doc.moveDown(0.2);
-      doc.font('Helvetica-Bold').text('Bemerkung:');
-      doc.font('Helvetica').text(data.bemerkung, { width: CONTENT_WIDTH });
-    }
-    doc.moveDown(0.5);
+  if (existsSync(LOGO_PATH)) {
+    try {
+      doc.image(LOGO_PATH, MARGIN, top, { height: logoHeight });
+    } catch { /* ignore */ }
   }
+
+  doc.font('Helvetica-Bold').fontSize(11).fillColor(COLOR_TEXT)
+    .text(COMPANY_NAME, MARGIN, top + 6, {
+      width: CONTENT_WIDTH, align: 'right', lineBreak: false,
+    });
+  doc.font('Helvetica').fontSize(9).fillColor(COLOR_MUTED)
+    .text(COMPANY_SUBLINE, MARGIN, top + 22, {
+      width: CONTENT_WIDTH, align: 'right', lineBreak: false,
+    });
+  doc.fontSize(9).text('Abnahme-Dokumentation', MARGIN, top + 34, {
+    width: CONTENT_WIDTH, align: 'right', lineBreak: false,
+  });
+
+  const barY = top + logoHeight + 12;
+  doc.strokeColor(COLOR_PRIMARY).lineWidth(1.5)
+    .moveTo(MARGIN, barY).lineTo(MARGIN + CONTENT_WIDTH, barY).stroke();
+
+  doc.y = barY + 18;
+
+  const titleY = doc.y;
+  doc.font('Helvetica-Bold').fontSize(22).fillColor(COLOR_PRIMARY)
+    .text(data.auftrag.sevdeskOrderNumber, MARGIN, titleY, {
+      width: CONTENT_WIDTH / 2, lineBreak: false,
+    });
+
+  const completed = data.completedAt ?? data.startedAt;
+  doc.font('Helvetica').fontSize(9).fillColor(COLOR_MUTED)
+    .text('Abgeschlossen', MARGIN, titleY + 4, {
+      width: CONTENT_WIDTH, align: 'right', lineBreak: false,
+    });
+  doc.font('Helvetica-Bold').fontSize(11).fillColor(COLOR_TEXT)
+    .text(fmtDate(completed), MARGIN, titleY + 18, {
+      width: CONTENT_WIDTH, align: 'right', lineBreak: false,
+    });
+
+  doc.y = titleY + 40;
+  doc.fillColor(COLOR_TEXT);
+}
+
+function buildAuftragInfo(doc: PdfDoc, data: PdfData) {
+  sectionHeader(doc, 'Auftrag');
+  keyValueRow(doc, 'Vorarbeiter', data.vorarbeiter.name);
+  keyValueRow(doc, 'Status', data.status);
+  doc.y += 10;
+}
+
+function buildKundenInfo(doc: PdfDoc, data: PdfData) {
+  sectionHeader(doc, 'Kunde');
+  doc.font('Helvetica').fontSize(10).fillColor(COLOR_TEXT);
+  const lines = (data.auftrag.customerAddress ?? data.auftrag.customerName).split('\n');
+  lines.forEach(line => {
+    doc.text(line, MARGIN, doc.y);
+  });
+  doc.y += 10;
+}
+
+function buildBedingungen(doc: PdfDoc, data: PdfData) {
+  if (!data.wetter && !data.bemerkung && data.arbeitsstunden == null) return;
+  sectionHeader(doc, 'Arbeitsbedingungen');
+  if (data.wetter) keyValueRow(doc, 'Wetter', data.wetter);
+  if (data.arbeitsstunden) keyValueRow(doc, 'Arbeitsstunden', `${data.arbeitsstunden} h`);
+  if (data.bemerkung) {
+    const y = doc.y;
+    doc.font('Helvetica').fontSize(9).fillColor(COLOR_MUTED)
+      .text('Bemerkung', MARGIN, y, { lineBreak: false, width: 120 });
+    doc.font('Helvetica').fontSize(10).fillColor(COLOR_TEXT)
+      .text(data.bemerkung, MARGIN + 120, y - 1, {
+        lineBreak: true, width: CONTENT_WIDTH - 120,
+      });
+  }
+  doc.y += 10;
 }
 
 function buildPositionen(doc: PdfDoc, data: PdfData) {
-  ensureSpace(doc, 100);
-  doc.font('Helvetica-Bold').fillColor(COLOR_PRIMARY).fontSize(11).text('VERBAUTE POSITIONEN');
-  doc.fillColor('black').font('Helvetica').fontSize(9);
-  doc.moveDown(0.3);
+  ensureSpace(doc, 60);
+  sectionHeader(doc, 'Verbaute Positionen');
 
   data.auftrag.positions.forEach((pos, idx) => {
-    ensureSpace(doc, 80);
+    ensureSpace(doc, 70);
     const startY = doc.y;
+    const indent = MARGIN + 14;
+    const innerWidth = CONTENT_WIDTH - 18;
 
-    doc.rect(MARGIN, startY, CONTENT_WIDTH, 14).fill(COLOR_LIGHT_BG);
-    doc.fillColor('black').font('Helvetica-Bold').fontSize(9.5);
-    doc.text(`${pos.sevdeskPosNumber ?? (idx + 1)}. ${pos.bezeichnung}`, MARGIN + 5, startY + 3, {
-      width: CONTENT_WIDTH - 10
-    });
-    doc.font('Helvetica').fontSize(9);
-    doc.y = startY + 16;
+    // Title
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(COLOR_TEXT)
+      .text(`${pos.sevdeskPosNumber ?? idx + 1}. ${pos.bezeichnung}`, indent, startY + 8, {
+        width: innerWidth,
+      });
 
-    const indent = MARGIN + 10;
-    doc.text(`Menge: ${pos.menge}${pos.einheit ? ' ' + pos.einheit : ''}`, indent, doc.y);
-    if (pos.serialNumbers && pos.serialNumbers.length > 0) {
-  const label = pos.serialNumbers.length === 1 ? 'Serial-Nr.' : 'Serial-Nrn.';
-  doc.text(`${label}: ${pos.serialNumbers.join(', ')}`, indent, doc.y, {
-    width: CONTENT_WIDTH - 20
-  });
-}
-    if (pos.verbaut) {
-      const installer = pos.verbautVon?.name ?? 'unbekannt';
-      doc.fillColor('#1a7a1a').text(`Verbaut: ✓  durch ${installer}  am ${fmtDate(pos.verbautAm)}`, indent);
-      doc.fillColor('black');
-    } else {
-      doc.fillColor('#888').text('Nicht verbaut', indent);
-      doc.fillColor('black');
+    // Menge
+    doc.font('Helvetica').fontSize(9).fillColor(COLOR_MUTED)
+      .text(`Menge: ${pos.menge}${pos.einheit ? ' ' + pos.einheit : ''}`, indent, doc.y, {
+        lineBreak: false, width: innerWidth,
+      });
+    doc.y += 13;
+
+    // Serial
+    if (pos.serialNumber) {
+      doc.font('Helvetica').fontSize(9).fillColor(COLOR_MUTED)
+        .text(`Serial-Nr.: ${pos.serialNumber}`, indent, doc.y, {
+          lineBreak: false, width: innerWidth,
+        });
+      doc.y += 13;
     }
+
+    // Verbaut
+    if (pos.verbaut) {
+      const verbY = doc.y;
+      drawCheckmark(doc, indent, verbY + 1, 10, COLOR_SUCCESS);
+      const installer = pos.verbautVon?.name ?? 'unbekannt';
+      doc.font('Helvetica').fontSize(9).fillColor(COLOR_SUCCESS)
+        .text(`Verbaut durch ${installer} am ${fmtDate(pos.verbautAm)}`, indent + 16, verbY, {
+          lineBreak: false, width: innerWidth - 16,
+        });
+      doc.y = verbY + 13;
+    } else {
+      doc.font('Helvetica-Oblique').fontSize(9).fillColor(COLOR_MUTED)
+        .text('Nicht verbaut', indent, doc.y, { lineBreak: false });
+      doc.y += 13;
+    }
+
     if (pos.bemerkung) {
-      doc.text(`Bemerkung: ${pos.bemerkung}`, indent, doc.y, { width: CONTENT_WIDTH - 20 });
+      doc.font('Helvetica').fontSize(9).fillColor(COLOR_TEXT)
+        .text(pos.bemerkung, indent, doc.y, { width: innerWidth });
     }
 
     if (pos.abnahmen.length > 0) {
-      doc.moveDown(0.2);
       doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(COLOR_MUTED)
-         .text('Teilabnahmen:', indent);
-      doc.font('Helvetica').fontSize(8.5);
+        .text('Teilabnahmen:', indent, doc.y);
       pos.abnahmen.forEach(a => {
-        doc.text(`  • ${a.signerName} (${a.typ}) am ${fmtDate(a.signedAt)}`, indent + 5);
+        doc.text(`  • ${a.signerName} (${a.typ}) am ${fmtDate(a.signedAt)}`, indent);
       });
-      doc.fillColor('black').fontSize(9);
     }
-    doc.moveDown(0.4);
+
+    const totalH = doc.y - startY + 6;
+    doc.strokeColor(COLOR_BORDER).lineWidth(0.7)
+      .roundedRect(MARGIN, startY, CONTENT_WIDTH, totalH, 4).stroke();
+    doc.fillColor(COLOR_PRIMARY)
+      .rect(MARGIN, startY, 3, totalH).fill();
+    doc.fillColor(COLOR_TEXT);
+    doc.y = startY + totalH + 8;
   });
-  doc.moveDown(0.5);
+
+  doc.y += 4;
 }
 
 function buildFotos(doc: PdfDoc, data: PdfData) {
   if (data.fotos.length === 0) return;
-  ensureSpace(doc, 200);
-  doc.font('Helvetica-Bold').fillColor(COLOR_PRIMARY).fontSize(11)
-     .text(`FOTODOKUMENTATION (${data.fotos.length})`);
-  doc.fillColor('black').font('Helvetica').fontSize(9);
-  doc.moveDown(0.3);
+  ensureSpace(doc, 130);
+  sectionHeader(doc, `Fotodokumentation (${data.fotos.length})`);
 
   const cols = 3;
-  const gap = 10;
+  const gap = 8;
   const imgWidth = (CONTENT_WIDTH - gap * (cols - 1)) / cols;
-  const imgHeight = imgWidth * 0.75;
+  const imgHeight = imgWidth * 0.7;
+  const captionH = 14;
 
   let col = 0;
   data.fotos.forEach(foto => {
-    if (col === 0) ensureSpace(doc, imgHeight + 30);
+    if (col === 0) ensureSpace(doc, imgHeight + captionH + 10);
     const x = MARGIN + col * (imgWidth + gap);
     const y = doc.y;
 
     try {
       doc.image(thumbnailPath(foto.dokumentationId, foto.filename), x, y, {
         fit: [imgWidth, imgHeight],
-        align: 'center',
-        valign: 'center'
+        align: 'center', valign: 'center',
       });
     } catch {
-      doc.rect(x, y, imgWidth, imgHeight).stroke();
-      doc.text('(Bild nicht verfügbar)', x, y + imgHeight / 2 - 5, { width: imgWidth, align: 'center' });
+      doc.strokeColor(COLOR_BORDER).rect(x, y, imgWidth, imgHeight).stroke();
+      doc.font('Helvetica').fontSize(8).fillColor(COLOR_MUTED)
+        .text('Bild nicht verfügbar', x, y + imgHeight / 2 - 5, {
+          width: imgWidth, align: 'center',
+        });
     }
-    doc.fontSize(8).fillColor(COLOR_MUTED).text(foto.kategorie, x, y + imgHeight + 2, {
-      width: imgWidth, align: 'center'
-    });
-    doc.fillColor('black').fontSize(9);
+
+    doc.font('Helvetica').fontSize(7).fillColor(COLOR_MUTED)
+      .text(foto.kategorie, x, y + imgHeight + 3, {
+        width: imgWidth, align: 'center', characterSpacing: 0.5, lineBreak: false,
+      });
 
     col++;
     if (col >= cols) {
       col = 0;
-      doc.y = y + imgHeight + 18;
+      doc.y = y + imgHeight + captionH + 6;
     } else {
       doc.y = y;
     }
   });
-  if (col !== 0) doc.y = doc.y + imgHeight + 18;
-  doc.moveDown(0.5);
+  if (col !== 0) doc.y = doc.y + imgHeight + captionH + 6;
+  doc.fillColor(COLOR_TEXT);
 }
 
 function buildSchlussunterschriften(doc: PdfDoc, data: PdfData) {
   const schluss = data.unterschriften.filter(u => u.positionId === null);
   if (schluss.length === 0) return;
 
-  ensureSpace(doc, 200);
-  doc.font('Helvetica-Bold').fillColor(COLOR_PRIMARY).fontSize(11).text('SCHLUSSUNTERSCHRIFTEN');
-  doc.fillColor('black').font('Helvetica').fontSize(10);
-  doc.moveDown(0.3);
+  ensureSpace(doc, 130);
+  sectionHeader(doc, 'Schlussunterschriften');
 
   const monteur = schluss.find(u => u.typ === 'MONTEUR');
   const kunde = schluss.find(u => u.typ === 'KUNDE');
 
-  const colWidth = (CONTENT_WIDTH - 20) / 2;
+  const gap = 30;
+  const boxWidth = (CONTENT_WIDTH - gap) / 2;
+  const boxHeight = 65;
   const startY = doc.y;
-  const sigBoxHeight = 80;
 
-  renderSigBox(doc, MARGIN, startY, colWidth, sigBoxHeight, 'Monteur', monteur);
-  renderSigBox(doc, MARGIN + colWidth + 20, startY, colWidth, sigBoxHeight, 'Kunde', kunde);
+  renderSigBox(doc, MARGIN, startY, boxWidth, boxHeight, 'Monteur', monteur);
+  renderSigBox(doc, MARGIN + boxWidth + gap, startY, boxWidth, boxHeight, 'Kunde', kunde);
 
-  doc.y = startY + sigBoxHeight + 60;
+  doc.y = startY + boxHeight + 45;
 }
 
 function renderSigBox(
   doc: PdfDoc,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  rolle: string,
+  x: number, y: number,
+  width: number, height: number,
+  role: string,
   sig: PdfData['unterschriften'][number] | undefined
 ) {
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('black').text(rolle, x, y);
+  doc.font('Helvetica').fontSize(8).fillColor(COLOR_MUTED)
+    .text(role.toUpperCase(), x, y, {
+      lineBreak: false, characterSpacing: 1.2,
+    });
 
   if (sig) {
     try {
       const buf = Buffer.from(sig.signatureData, 'base64');
-      doc.image(buf, x, y + 15, { fit: [width, height], align: 'left', valign: 'top' });
-    } catch {
-      // Bild kaputt → ignorieren
-    }
+      doc.image(buf, x, y + 12, {
+        fit: [width, height - 12],
+        align: 'left', valign: 'top',
+      });
+    } catch { /* ignore */ }
   }
 
-  doc.strokeColor('black').lineWidth(0.5)
-     .moveTo(x, y + height + 15).lineTo(x + width, y + height + 15).stroke();
+  const lineY = y + height + 4;
+  doc.strokeColor(COLOR_TEXT).lineWidth(0.5)
+    .moveTo(x, lineY).lineTo(x + width, lineY).stroke();
 
-  doc.font('Helvetica').fontSize(9).fillColor(COLOR_MUTED);
   if (sig) {
-    doc.text(sig.signerName, x, y + height + 20);
-    doc.text(`Unterschrieben am ${fmtDate(sig.signedAt)}`, x);
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(COLOR_TEXT)
+      .text(sig.signerName, x, lineY + 5, { lineBreak: false, width });
+    doc.font('Helvetica').fontSize(8).fillColor(COLOR_MUTED)
+      .text(fmtDate(sig.signedAt), x, lineY + 19, { lineBreak: false, width });
   } else {
-    doc.text('Keine Unterschrift vorhanden', x, y + height + 20);
+    doc.font('Helvetica-Oblique').fontSize(9).fillColor(COLOR_MUTED)
+      .text('Keine Unterschrift', x, lineY + 5, { lineBreak: false, width });
   }
-  doc.fillColor('black');
 }
 
 function buildFooter(doc: PdfDoc) {
   const range = doc.bufferedPageRange();
-  for (let i = range.start; i < range.start + range.count; i++) {
+  const total = range.count;
+  const createdAt = fmtDate(new Date());
+
+  for (let i = range.start; i < range.start + total; i++) {
     doc.switchToPage(i);
-    doc.font('Helvetica').fontSize(8).fillColor(COLOR_MUTED).text(
-      `Erstellt am ${fmtDate(new Date())} mit KieTec-Dokumentation v0.1 · Seite ${i - range.start + 1} von ${range.count}`,
-      MARGIN,
-      doc.page.height - 35,
-      { width: CONTENT_WIDTH, align: 'center' }
+    const pageNum = i - range.start + 1;
+    const footerY = PAGE_HEIGHT - 28;
+
+    doc.strokeColor(COLOR_BORDER).lineWidth(0.5)
+      .moveTo(MARGIN, footerY - 6).lineTo(MARGIN + CONTENT_WIDTH, footerY - 6).stroke();
+
+    doc.font('Helvetica').fontSize(7.5).fillColor(COLOR_MUTED).text(
+      `${COMPANY_NAME} · Erstellt am ${createdAt}`,
+      MARGIN, footerY,
+      { width: CONTENT_WIDTH / 2, lineBreak: false, align: 'left' },
+    );
+    doc.text(
+      `Seite ${pageNum} von ${total}`,
+      MARGIN + CONTENT_WIDTH / 2, footerY,
+      { width: CONTENT_WIDTH / 2, lineBreak: false, align: 'right' },
     );
   }
 }
