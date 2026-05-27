@@ -40,13 +40,38 @@ const fotosRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
           fileBuffer = await part.toBuffer();
           originalFilename = part.filename ?? 'upload.jpg';
         } else {
-          const value = String(part.value);
-          if (part.fieldname === 'kategorie' && Object.values(FotoKategorie).includes(value as FotoKategorie)) {
-            kategorie = value as FotoKategorie;
-          } else if (part.fieldname === 'beschreibung') beschreibung = value;
-          else if (part.fieldname === 'positionId') positionId = value;
+        // Defensive Value-Extraction für @fastify/multipart
+        const raw: unknown = (part as { value?: unknown }).value;
+        let value: string;
+        if (typeof raw === 'string') {
+          value = raw;
+        } else if (Buffer.isBuffer(raw)) {
+          value = raw.toString('utf8');
+        } else {
+          value = String(raw);
         }
-      }
+
+        request.log.info({
+          fieldname: part.fieldname,
+          rawType: typeof raw,
+          rawValue: raw,
+          parsedValue: value,
+          validEnumValues: Object.values(FotoKategorie)
+        }, '[fotos] multipart field received');
+
+        if (part.fieldname === 'kategorie') {
+          if (Object.values(FotoKategorie).includes(value as FotoKategorie)) {
+            kategorie = value as FotoKategorie;
+            request.log.info({ kategorie }, '[fotos] kategorie set');
+          } else {
+            request.log.warn({ value }, '[fotos] kategorie value NOT in enum, ignored');
+          }
+        } else if (part.fieldname === 'beschreibung') {
+          beschreibung = value;
+        } else if (part.fieldname === 'positionId') {
+          positionId = value;
+        }
+      }      }
     } catch (e) {
       return reply.code(400).send({
         error: 'Multipart-Parsing fehlgeschlagen',
