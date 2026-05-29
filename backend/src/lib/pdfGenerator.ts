@@ -45,7 +45,12 @@ export interface PdfData {
       verbautAm: Date | null;
       bemerkung: string | null;
       verbautVon: { name: string } | null;
-      abnahmen: Array<{ signerName: string; signedAt: Date; typ: string }>;
+      abnahmen: Array<{
+        signerName: string;
+        signedAt: Date;
+        typ: string;
+        signatureData: string | null;
+      }>;
     }>;
   };
   fotos: Array<{
@@ -236,7 +241,7 @@ function buildPositionen(doc: PdfDoc, data: PdfData) {
   sectionHeader(doc, 'Verbaute Positionen');
 
   data.auftrag.positions.forEach((pos, idx) => {
-    ensureSpace(doc, 70);
+    ensureSpace(doc, 70 + pos.abnahmen.length * 58);
     const startY = doc.y;
     const indent = MARGIN + 14;
     const innerWidth = CONTENT_WIDTH - 18;
@@ -285,10 +290,30 @@ function buildPositionen(doc: PdfDoc, data: PdfData) {
     }
 
     if (pos.abnahmen.length > 0) {
-      doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(COLOR_MUTED)
-        .text('Teilabnahmen:', indent, doc.y);
+      doc.y += 4;
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COLOR_PRIMARY)
+        .text('Abnahme durch Kunden', indent, doc.y, { lineBreak: false });
+      doc.y += 14;
+
       pos.abnahmen.forEach(a => {
-        doc.text(`  • ${a.signerName} (${a.typ}) am ${fmtDate(a.signedAt)}`, indent);
+        const sigY = doc.y;
+        // Unterschriftsbild
+        if (a.signatureData) {
+          try {
+            const buf = Buffer.from(a.signatureData, 'base64');
+            doc.image(buf, indent, sigY, { fit: [150, 34], align: 'left', valign: 'top' });
+          } catch { /* ignore */ }
+        }
+        // Trennlinie unter der Unterschrift
+        const lineY = sigY + 36;
+        doc.strokeColor(COLOR_BORDER).lineWidth(0.5)
+          .moveTo(indent, lineY).lineTo(indent + 150, lineY).stroke();
+        // Name + Datum
+        doc.font('Helvetica').fontSize(8).fillColor(COLOR_MUTED)
+          .text(`${a.signerName} · ${fmtDate(a.signedAt)}`, indent, lineY + 3, {
+            lineBreak: false, width: 150,
+          });
+        doc.y = lineY + 16;
       });
     }
 

@@ -28,7 +28,7 @@ const pdfRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
                 verbautVon: { select: { name: true } },
                 abnahmen: {
                   orderBy: { signedAt: 'asc' },
-                  select: { signerName: true, signedAt: true, typ: true }
+                  select: { signerName: true, signedAt: true, typ: true, signatureData: true }
                 }
               }
             }
