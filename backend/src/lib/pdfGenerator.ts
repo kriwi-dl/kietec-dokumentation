@@ -40,7 +40,7 @@ export interface PdfData {
       bezeichnung: string;
       menge: number;
       einheit: string | null;
-      serialNumber: string | null;
+      serialNumbers: string[];
       verbaut: boolean;
       verbautAm: Date | null;
       bemerkung: string | null;
@@ -241,7 +241,9 @@ function buildPositionen(doc: PdfDoc, data: PdfData) {
   sectionHeader(doc, 'Verbaute Positionen');
 
   data.auftrag.positions.forEach((pos, idx) => {
-    ensureSpace(doc, 70 + pos.abnahmen.length * 58);
+    const serialCount = (pos.serialNumbers ?? []).filter((s) => s && s.trim()).length;
+    const serialSpace = serialCount > 0 ? 24 + Math.ceil(serialCount / 4) * 11 : 0;
+    ensureSpace(doc, 70 + pos.abnahmen.length * 58 + serialSpace);
     const startY = doc.y;
     const indent = MARGIN + 14;
     const innerWidth = CONTENT_WIDTH - 18;
@@ -259,13 +261,15 @@ function buildPositionen(doc: PdfDoc, data: PdfData) {
       });
     doc.y += 13;
 
-    // Serial
-    if (pos.serialNumber) {
-      doc.font('Helvetica').fontSize(9).fillColor(COLOR_MUTED)
-        .text(`Serial-Nr.: ${pos.serialNumber}`, indent, doc.y, {
-          lineBreak: false, width: innerWidth,
-        });
-      doc.y += 13;
+    // Seriennummern (manuell erfasst)
+    const serials = (pos.serialNumbers ?? []).filter((s) => s && s.trim().length > 0);
+    if (serials.length > 0) {
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COLOR_TEXT)
+        .text(`Seriennummern (${serials.length}):`, indent, doc.y, { lineBreak: false });
+      doc.y += 12;
+      doc.font('Courier').fontSize(8).fillColor(COLOR_MUTED)
+        .text(serials.join(',   '), indent, doc.y, { width: innerWidth });
+      doc.y += 4;
     }
 
     // Verbaut
