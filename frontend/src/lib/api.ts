@@ -53,19 +53,29 @@ export type DokuStatus =
   | 'ENTWURF' | 'IN_ARBEIT' | 'ZUR_UNTERSCHRIFT'
   | 'UNTERSCHRIEBEN' | 'VERSENDET' | 'SEVDESK_HOCHGELADEN';
 
+export interface PositionAbnahme {
+  id: string;
+  typ: UnterschriftTyp;
+  signerName: string;
+  signedAt: string;
+  ipAddress?: string | null;
+}
+
 export interface Position {
   id: string;
   auftragId: string;
   sevdeskPosNumber?: string | null;
   bezeichnung: string;
+  beschreibung?: string | null;
   menge: number;
   einheit?: string | null;
-  serialNumber?: string | null;
+  serialNumbers: string[];
   verbaut: boolean;
   verbautAm?: string | null;
   verbautVonId?: string | null;
   verbautVon?: { id: string; name: string } | null;
   bemerkung?: string | null;
+  abnahmen?: PositionAbnahme[];
 }
 
 export interface Auftrag {
@@ -87,9 +97,42 @@ export interface AuftraegeListResponse {
   auftraege: Auftrag[];
 }
 
+export type FotoKategorie =
+  | 'VOR_BEGINN'
+  | 'FORTSCHRITT'
+  | 'VERKABELUNG'
+  | 'TYPENSCHILD'
+  | 'MAENGEL'
+  | 'ENDABNAHME'
+  | 'SONSTIGES';
+
+export interface Foto {
+  id: string;
+  dokumentationId: string;
+  positionId?: string | null;
+  filename: string;
+  kategorie: FotoKategorie;
+  beschreibung?: string | null;
+  width?: number | null;
+  height?: number | null;
+  sizeBytes?: number | null;
+  uploadedAt: string;
+}
+
+export type UnterschriftTyp = 'MONTEUR' | 'KUNDE' | 'VORARBEITER';
+
+export interface Unterschrift {
+  id: string;
+  typ: UnterschriftTyp;
+  signerName: string;
+  signedAt: string;
+  positionId?: string | null;
+}
+
 export interface Dokumentation {
   id: string;
   auftragId: string;
+  auftrag?: Auftrag;
   vorarbeiterId: string;
   status: DokuStatus;
   wetter?: string | null;
@@ -101,6 +144,8 @@ export interface Dokumentation {
   versendetAn?: string | null;
   versendetAm?: string | null;
   sevdeskVoucherId?: string | null;
+  fotos?: Foto[];
+  unterschriften?: Unterschrift[];
 }
 
 export interface DokumentationenListResponse {
@@ -150,9 +195,116 @@ export const api = {
       body: JSON.stringify(data),
     }, token),
 
-  updatePosition: (token: string, id: string, data: Partial<Pick<Position, 'verbaut' | 'serialNumber' | 'bemerkung'>>) =>
+  updatePosition: (token: string, id: string, data: Partial<Pick<Position, 'verbaut' | 'serialNumbers' | 'bemerkung'>>) =>
     request<Position>(`/positionen/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }, token),
+
+  listFotos: (token: string, dokuId: string) =>
+    request<{ count: number; fotos: Foto[] }>(`/dokumentationen/${dokuId}/fotos`, {}, token),
+
+  uploadFoto: async (
+    token: string,
+    dokuId: string,
+    file: File,
+    options: { kategorie?: FotoKategorie; beschreibung?: string; positionId?: string } = {}
+  ) => {
+    const formData = new FormData();
+    // WICHTIG: Wertfelder VOR der Datei appenden,
+    // sonst werden sie von @fastify/multipart nicht gelesen.
+    formData.append('kategorie', options.kategorie ?? 'FORTSCHRITT');
+    if (options.beschreibung) formData.append('beschreibung', options.beschreibung);
+    if (options.positionId) formData.append('positionId', options.positionId);
+    formData.append('file', file);
+
+    const res = await fetch(`${API_BASE}/dokumentationen/${dokuId}/fotos`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (!res.ok) {
+      let body: unknown;
+      try { body = await res.json(); } catch { body = await res.text(); }
+      throw new ApiError(res.status, body);
+    }
+    return res.json() as Promise<{ foto: Foto }>;
+  },
+
+  deleteFoto: (token: string, fotoId: string) =>
+    request<{ success: boolean }>(`/fotos/${fotoId}`, { method: 'DELETE' }, token),
+
+  fetchFotoBlob: async (token: string, fotoId: string, kind: 'thumbnail' | 'file') => {
+    const res = await fetch(`${API_BASE}/fotos/${fotoId}/${kind}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new ApiError(res.status, 'Foto-Download fehlgeschlagen');
+    return res.blob();
+  },
+
+  createSignature: (
+    token: string,
+    dokuId: string,
+    data: { typ: UnterschriftTyp; signerName: string; signatureData: string; positionId?: string }
+  ) =>
+    request<{
+      signature: Unterschrift;
+      url: string;
+      statusAdvanced: boolean;
+    }>(`/dokumentationen/${dokuId}/unterschriften`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, token),
+
+  generatePdf: (token: string, dokuId: string) =>
+    request<{ success: boolean; url: string; sizeKb: number; generatedAt: string }>(
+      `/dokumentationen/${dokuId}/pdf`,
+      { method: 'POST', body: '{}' },
+      token
+    ),
+
+  fetchPdfBlob: async (token: string, dokuId: string): Promise<Blob> => {
+    const res = await fetch(`${API_BASE}/dokumentationen/${dokuId}/pdf`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new ApiError(res.status, 'PDF-Download fehlgeschlagen');
+    return res.blob();
+  },
+
+  sendEmail: (token: string, dokuId: string, data: { to: string; subject?: string; message?: string }) =>
+    request<{
+      success: boolean;
+      messageId: string;
+      accepted: string[];
+      rejected: string[];
+      sentTo: string;
+      sentAt: string;
+      statusAdvanced: boolean;
+    }>(`/dokumentationen/${dokuId}/email`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, token),
+
+  uploadToSevdesk: (token: string, dokuId: string) =>
+    request<{
+      success: boolean;
+      documentId: string;
+      folderName: string;
+      folderId: string;
+      linkedOrderId: string | null;
+      statusAdvanced: boolean;
+      uploadedAt: string;
+    }>(`/dokumentationen/${dokuId}/sevdesk-upload`, {
+      method: 'POST',
+      body: '{}',
+    }, token),
+
+    syncSevdesk: (token: string) =>
+    request<{
+      created?: number;
+      updated?: number;
+      positions?: number;
+      errors?: number;
+      [k: string]: unknown;
+    }>('/sync/sevdesk', { method: 'POST', body: '{}' }, token),
 };

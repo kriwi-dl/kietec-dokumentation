@@ -256,6 +256,13 @@ function buildPositionen(doc: PdfDoc, data: PdfData) {
         width: innerWidth,
       });
 
+    // Leistungstext / Beschreibung aus sevdesk
+    if (pos.beschreibung && pos.beschreibung.trim()) {
+      doc.font('Helvetica').fontSize(9).fillColor(COLOR_TEXT)
+        .text(pos.beschreibung.trim(), indent, doc.y + 1, { width: innerWidth });
+      doc.y += 3;
+    }
+
     // Menge
     doc.font('Helvetica').fontSize(9).fillColor(COLOR_MUTED)
       .text(`Menge: ${pos.menge}${pos.einheit ? ' ' + pos.einheit : ''}`, indent, doc.y, {

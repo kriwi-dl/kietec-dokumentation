@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ChevronLeft, Plus, FileText } from 'lucide-react';
-import { api, type Auftrag, type Dokumentation } from '@/lib/api';
+import { api, ApiError, type Auftrag, type Dokumentation } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -41,6 +41,14 @@ export function AuftragDetail() {
       const doku = await api.createDoku(token, id);
       navigate(`/dokumentationen/${doku.id}`);
     } catch (err) {
+      // 409: es existiert bereits eine Doku → zur vorhandenen navigieren
+      if (err instanceof ApiError && err.status === 409) {
+        const existingId = (err.bodyData as { dokuId?: string } | null)?.dokuId;
+        if (existingId) {
+          navigate(`/dokumentationen/${existingId}`);
+          return;
+        }
+      }
       setError(err instanceof Error ? err.message : 'Fehler beim Anlegen');
     } finally {
       setCreating(false);
@@ -67,6 +75,8 @@ export function AuftragDetail() {
       </div>
     );
   }
+
+  const existingDoku = dokus[0];
 
   return (
     <div className="min-h-screen bg-muted/30">
@@ -113,20 +123,31 @@ export function AuftragDetail() {
                     <span className="text-xs text-primary shrink-0">✓ verbaut</span>
                   )}
                 </div>
+                {p.beschreibung && p.beschreibung.trim() && (
+                  <p className="text-foreground/80 text-xs mt-0.5 whitespace-pre-line">
+                    {p.beschreibung}
+                  </p>
+                )}
                 <p className="text-muted-foreground text-xs mt-0.5">
                   {p.menge} {p.einheit ?? ''}
-                  {p.serialNumber && ` · SN: ${p.serialNumber}`}
+                  {p.serialNumbers.length > 0 && (
+                    ` · ${p.serialNumbers.length === 1 ? 'SN' : 'SNs'}: ${
+                      p.serialNumbers.length <= 2
+                        ? p.serialNumbers.join(', ')
+                        : `${p.serialNumbers[0]} (+${p.serialNumbers.length - 1} weitere)`
+                    }`
+                  )}
                 </p>
               </div>
             ))}
           </CardContent>
         </Card>
 
-        {/* Dokumentationen */}
+        {/* Dokumentation */}
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
-              Dokumentationen ({dokus.length})
+              Dokumentation
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
@@ -160,15 +181,24 @@ export function AuftragDetail() {
           </CardContent>
         </Card>
 
-        <Button
-          size="lg"
-          className="w-full"
-          onClick={handleCreateDoku}
-          disabled={creating}
-        >
-          <Plus className="size-5" />
-          {creating ? 'Wird angelegt…' : 'Neue Doku starten'}
-        </Button>
+        {existingDoku ? (
+          <Button size="lg" className="w-full" asChild>
+            <Link to={`/dokumentationen/${existingDoku.id}`}>
+              <FileText className="size-5" />
+              Dokumentation öffnen
+            </Link>
+          </Button>
+        ) : (
+          <Button
+            size="lg"
+            className="w-full"
+            onClick={handleCreateDoku}
+            disabled={creating}
+          >
+            <Plus className="size-5" />
+            {creating ? 'Wird angelegt…' : 'Neue Doku starten'}
+          </Button>
+        )}
       </main>
     </div>
   );

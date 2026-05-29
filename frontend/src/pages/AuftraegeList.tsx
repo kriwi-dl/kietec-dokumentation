@@ -30,6 +30,7 @@ export function AuftraegeList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   async function load(showSpinner = true) {
     if (!token) return;
@@ -50,13 +51,41 @@ export function AuftraegeList() {
     }
   }
 
+  // Lokale Liste laden bei Filter-/Token-Wechsel
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter, token]);
 
+  // Stiller sevdesk-Sync beim ersten Öffnen, danach Liste neu laden
+  useEffect(() => {
+    if (!token) return;
+    api.syncSevdesk(token)
+      .then(() => load(false))
+      .catch(() => { /* still: lokale Daten reichen */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Manueller Refresh: sevdesk-Sync + Liste neu laden
   async function handleRefresh() {
+    if (!token) return;
     setRefreshing(true);
+    setError(null);
+    setSyncMsg(null);
+    try {
+      const result = await api.syncSevdesk(token);
+      const created = result.created ?? 0;
+      const updated = result.updated ?? 0;
+      if (created || updated) {
+        const parts: string[] = [];
+        if (created) parts.push(`${created} neu`);
+        if (updated) parts.push(`${updated} aktualisiert`);
+        setSyncMsg(parts.join(' · '));
+        setTimeout(() => setSyncMsg(null), 4000);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sync fehlgeschlagen');
+    }
     await load(false);
   }
 
@@ -97,8 +126,9 @@ export function AuftraegeList() {
 
       {/* Content */}
       <main className="max-w-md mx-auto w-full px-4 pb-6 flex-1">
-        <div className="text-xs text-muted-foreground mb-2">
-          Eingeloggt als {user?.name} · {user?.role}
+        <div className="text-xs text-muted-foreground mb-2 flex items-center justify-between gap-2">
+          <span>Eingeloggt als {user?.name} · {user?.role}</span>
+          {syncMsg && <span className="text-primary font-medium">{syncMsg}</span>}
         </div>
 
         {loading && (
