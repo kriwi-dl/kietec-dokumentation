@@ -2,7 +2,8 @@ import type {
   SevdeskListResponse,
   SevdeskOrder,
   SevdeskOrderPos,
-  SevdeskContact
+  SevdeskContact,
+  SevdeskUnity
 } from './types';
 
 export class SevdeskApiError extends Error {
@@ -87,6 +88,14 @@ export class SevdeskClient {
       `/Contact/${contactId}`
     );
     return res.objects[0] ?? null;
+  }
+
+  async getUnits(): Promise<SevdeskUnity[]> {
+    const res = await this.request<SevdeskListResponse<SevdeskUnity>>(
+      '/Unity',
+      { limit: 1000 }
+    );
+    return res.objects ?? [];
   }
 
   /** Listet alle DocumentFolder. */

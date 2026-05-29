@@ -44,3 +44,11 @@ export interface SevdeskOrderPos {
   positionNumber?: string | null;
   unity?: { id: string; objectName: 'Unity' } | null;
 }
+
+export interface SevdeskUnity {
+  id: string;
+  objectName: 'Unity';
+  name?: string | null;
+  unity?: string | null;
+  translationCode?: string | null;
+}

@@ -37,6 +37,18 @@ export async function syncDeliveryNotes(
     durationMs: 0
   };
 
+  // Einheiten-Map (Unity-ID → Anzeigename) einmalig laden
+  const unitMap = new Map<string, string>();
+  try {
+    const units = await client.getUnits();
+    for (const u of units) {
+      const label = (u.name ?? u.unity ?? '').toString().trim();
+      if (label) unitMap.set(String(u.id), label);
+    }
+  } catch {
+    // Einheiten nicht ladbar – Sync läuft ohne Einheit weiter
+  }
+
   const pageSize = 50;
   let offset = 0;
   const maxIterations = 50; // Hard-Stop bei 50 * 50 = 2500 Aufträgen
@@ -64,7 +76,7 @@ export async function syncDeliveryNotes(
       }
 
       try {
-        await syncSingleOrder(prisma, client, order, result);
+        await syncSingleOrder(prisma, client, order, result, unitMap);
       } catch (e) {
         result.errors.push({
           sevdeskId: order.id,
@@ -86,7 +98,8 @@ async function syncSingleOrder(
   prisma: PrismaClient,
   client: SevdeskClient,
   order: SevdeskOrder,
-  result: SyncResult
+  result: SyncResult,
+  unitMap: Map<string, string>
 ) {
   // Kontakt holen (für Kundennamen)
   let customerName = '(Unbekannt)';
@@ -156,6 +169,7 @@ async function syncSingleOrder(
     });
 
     const menge = parseFloat(pos.quantity || '0');
+    const einheit = pos.unity?.id ? (unitMap.get(String(pos.unity.id)) ?? null) : null;
 
     if (existingPos) {
       await prisma.position.update({
@@ -164,8 +178,9 @@ async function syncSingleOrder(
           sevdeskPosNumber: pos.positionNumber ?? null,
           bezeichnung: pos.name ?? existingPos.bezeichnung,
           beschreibung: pos.text ?? null,
-          menge
-          // verbaut, verbautAm, verbautVon, serialNumber, bemerkung: nicht anfassen
+          menge,
+          einheit
+          // verbaut, verbautAm, verbautVon, serialNumbers, bemerkung: nicht anfassen
         }
       });
       result.positionsUpdated++;
@@ -177,7 +192,8 @@ async function syncSingleOrder(
           sevdeskPosNumber: pos.positionNumber ?? null,
           bezeichnung: pos.name ?? '(unbenannt)',
           beschreibung: pos.text ?? null,
-          menge
+          menge,
+          einheit
         }
       });
       result.positionsCreated++;
