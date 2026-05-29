@@ -39,7 +39,7 @@ const syncRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   });
 
   fastify.post('/sync/sevdesk', { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    if (!fastify.requireAdmin(request, reply)) return;
+    // jeder eingeloggte User darf syncen
     const parsed = syncQuerySchema.safeParse(request.query);
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues });
