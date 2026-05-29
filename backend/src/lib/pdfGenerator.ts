@@ -38,6 +38,7 @@ export interface PdfData {
       id: string;
       sevdeskPosNumber: string | null;
       bezeichnung: string;
+      beschreibung: string | null;
       menge: number;
       einheit: string | null;
       serialNumbers: string[];
@@ -243,7 +244,8 @@ function buildPositionen(doc: PdfDoc, data: PdfData) {
   data.auftrag.positions.forEach((pos, idx) => {
     const serialCount = (pos.serialNumbers ?? []).filter((s) => s && s.trim()).length;
     const serialSpace = serialCount > 0 ? 24 + Math.ceil(serialCount / 4) * 11 : 0;
-    ensureSpace(doc, 70 + pos.abnahmen.length * 58 + serialSpace);
+    const descSpace = pos.beschreibung && pos.beschreibung.trim() ? 30 : 0;
+    ensureSpace(doc, 70 + pos.abnahmen.length * 58 + serialSpace + descSpace);
     const startY = doc.y;
     const indent = MARGIN + 14;
     const innerWidth = CONTENT_WIDTH - 18;
