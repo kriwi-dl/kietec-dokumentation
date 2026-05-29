@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
-import { UserRole, DokuStatus, UnterschriftTyp } from '@prisma/client';
+import { UserRole, DokuStatus, UnterschriftTyp, AuftragStatus } from '@prisma/client';
 import { z } from 'zod';
 import { config } from '../config';
 import { FINAL_DOKU_STATUSES } from '../lib/dokuStatus';
@@ -91,6 +91,15 @@ const unterschriftenRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         await fastify.prisma.dokumentation.update({
           where: { id: dokuId },
           data: { status: DokuStatus.UNTERSCHRIEBEN, completedAt: new Date() }
+        });
+        // Auftrag auf DOKUMENTIERT ("Fertig") setzen – nur aus aktiven Status,
+        // damit ABGESCHLOSSEN/STORNIERT nicht zurückgesetzt werden
+        await fastify.prisma.auftrag.updateMany({
+          where: {
+            id: doku.auftragId,
+            status: { in: [AuftragStatus.OFFEN, AuftragStatus.ZUGEWIESEN, AuftragStatus.IN_BEARBEITUNG] }
+          },
+          data: { status: AuftragStatus.DOKUMENTIERT }
         });
         statusAdvanced = true;
       }

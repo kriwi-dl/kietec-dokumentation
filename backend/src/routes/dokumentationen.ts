@@ -40,6 +40,17 @@ const dokumentationenRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
         error: `Auftrag hat Status ${auftrag.status} - keine neue Dokumentation möglich`
       });
     }
+    // Nur eine Dokumentation pro Lieferschein
+    const existingDoku = await fastify.prisma.dokumentation.findFirst({
+      where: { auftragId: id },
+      select: { id: true }
+    });
+    if (existingDoku) {
+      return reply.code(409).send({
+        error: 'Für diesen Auftrag existiert bereits eine Dokumentation',
+        dokuId: existingDoku.id
+      });
+    }
     const dokumentation = await fastify.prisma.dokumentation.create({
       data: {
         auftragId: id,
