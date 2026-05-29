@@ -441,6 +441,12 @@ function buildFooter(doc: PdfDoc) {
 
   for (let i = range.start; i < range.start + total; i++) {
     doc.switchToPage(i);
+
+    // Bottom-Margin der Seite temporär aufheben, sonst hängt pdfkit
+    // für Text im unteren Randbereich jeweils eine neue Seite an.
+    const prevBottom = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+
     const pageNum = i - range.start + 1;
     const footerY = PAGE_HEIGHT - 28;
 
@@ -457,5 +463,7 @@ function buildFooter(doc: PdfDoc) {
       MARGIN + CONTENT_WIDTH / 2, footerY,
       { width: CONTENT_WIDTH / 2, lineBreak: false, align: 'right' },
     );
+
+    doc.page.margins.bottom = prevBottom;
   }
 }
